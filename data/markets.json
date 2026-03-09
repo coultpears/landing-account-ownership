@@ -1,0 +1,124 @@
+{
+  "top20MSAs": [
+    {
+      "id": "new-york",
+      "name": "New York",
+      "states": ["NY", "NJ", "CT"],
+      "keywords": ["New York", "NYC", "Manhattan", "Brooklyn", "Queens", "Bronx", "Staten Island", "Newark", "Jersey City", "Hoboken", "Yonkers", "White Plains"]
+    },
+    {
+      "id": "los-angeles",
+      "name": "Los Angeles",
+      "states": ["CA"],
+      "keywords": ["Los Angeles", "Long Beach", "Anaheim", "Santa Ana", "Irvine", "Glendale", "Pasadena", "Burbank", "Santa Monica", "Torrance", "Pomona"]
+    },
+    {
+      "id": "chicago",
+      "name": "Chicago",
+      "states": ["IL", "IN", "WI"],
+      "keywords": ["Chicago", "Naperville", "Elgin", "Joliet", "Aurora", "Rockford", "Gary", "Kenosha"]
+    },
+    {
+      "id": "dallas-fort-worth",
+      "name": "Dallas-Fort Worth",
+      "states": ["TX"],
+      "keywords": ["Dallas", "Fort Worth", "DFW", "Arlington", "Plano", "Garland", "Irving", "Frisco", "McKinney", "Grand Prairie", "Mesquite", "Carrollton", "Denton", "Lewisville", "Allen", "Richardson"]
+    },
+    {
+      "id": "houston",
+      "name": "Houston",
+      "states": ["TX"],
+      "keywords": ["Houston", "The Woodlands", "Sugar Land", "Baytown", "Pasadena", "Katy", "League City", "Pearland", "Conroe", "Spring"]
+    },
+    {
+      "id": "miami-fort-lauderdale",
+      "name": "Miami-Fort Lauderdale",
+      "states": ["FL"],
+      "keywords": ["Miami", "Fort Lauderdale", "Boca Raton", "West Palm Beach", "Pompano Beach", "Deerfield Beach", "Coral Springs", "Hialeah", "Hollywood", "Miramar", "Pembroke Pines", "Aventura", "Coral Gables", "Brickell", "North Miami", "Dade", "Broward"]
+    },
+    {
+      "id": "washington-dc",
+      "name": "Washington DC",
+      "states": ["DC", "VA", "MD"],
+      "keywords": ["Washington", "DC", "Alexandria", "Arlington", "Bethesda", "Silver Spring", "Rockville", "Gaithersburg", "Frederick", "Reston", "Tysons", "Fairfax", "Herndon", "Manassas"]
+    },
+    {
+      "id": "atlanta",
+      "name": "Atlanta",
+      "states": ["GA"],
+      "keywords": ["Atlanta", "Sandy Springs", "Roswell", "Johns Creek", "Alpharetta", "Marietta", "Smyrna", "Decatur", "Peachtree City", "Kennesaw", "Brookhaven", "Dunwoody"]
+    },
+    {
+      "id": "philadelphia",
+      "name": "Philadelphia",
+      "states": ["PA", "NJ", "DE"],
+      "keywords": ["Philadelphia", "Philly", "Camden NJ", "Chester", "Norristown", "Allentown", "Wilmington", "Trenton"]
+    },
+    {
+      "id": "phoenix",
+      "name": "Phoenix",
+      "states": ["AZ"],
+      "keywords": ["Phoenix", "Mesa", "Chandler", "Scottsdale", "Glendale", "Gilbert", "Tempe", "Peoria", "Surprise", "Goodyear", "Avondale", "Tucson"]
+    },
+    {
+      "id": "boston",
+      "name": "Boston",
+      "states": ["MA", "NH"],
+      "keywords": ["Boston", "Cambridge", "Quincy", "Worcester", "Providence", "Lowell", "Springfield", "Framingham", "Newton", "Somerville", "Brookline", "Manchester NH"]
+    },
+    {
+      "id": "riverside-san-bernardino",
+      "name": "Riverside-San Bernardino",
+      "states": ["CA"],
+      "keywords": ["Riverside", "San Bernardino", "Ontario", "Rancho Cucamonga", "Fontana", "Moreno Valley", "Corona", "Murrieta", "Temecula", "Victorville"]
+    },
+    {
+      "id": "san-francisco",
+      "name": "San Francisco",
+      "states": ["CA"],
+      "keywords": ["San Francisco", "Oakland", "Fremont", "San Jose", "Hayward", "Sunnyvale", "Santa Clara", "Berkeley", "Richmond", "Daly City", "Concord", "South San Francisco", "San Mateo", "Palo Alto", "Walnut Creek"]
+    },
+    {
+      "id": "detroit",
+      "name": "Detroit",
+      "states": ["MI"],
+      "keywords": ["Detroit", "Warren", "Sterling Heights", "Ann Arbor", "Lansing", "Flint", "Dearborn", "Livonia", "Clinton Township", "Westland", "Troy", "Farmington Hills", "Pontiac"]
+    },
+    {
+      "id": "seattle",
+      "name": "Seattle",
+      "states": ["WA"],
+      "keywords": ["Seattle", "Tacoma", "Bellevue", "Redmond", "Kirkland", "Renton", "Kent", "Everett", "Federal Way", "Spokane", "Olympia", "Bellingham"]
+    },
+    {
+      "id": "minneapolis-st-paul",
+      "name": "Minneapolis-St. Paul",
+      "states": ["MN"],
+      "keywords": ["Minneapolis", "St. Paul", "Saint Paul", "Bloomington", "Rochester", "Plymouth", "Brooklyn Park", "Duluth", "Maple Grove", "Woodbury", "Eden Prairie"]
+    },
+    {
+      "id": "tampa",
+      "name": "Tampa",
+      "states": ["FL"],
+      "keywords": ["Tampa", "St. Petersburg", "Saint Petersburg", "Clearwater", "Brandon", "Lakeland", "Bradenton", "Sarasota", "Spring Hill", "New Port Richey"]
+    },
+    {
+      "id": "san-diego",
+      "name": "San Diego",
+      "states": ["CA"],
+      "keywords": ["San Diego", "Chula Vista", "El Cajon", "Oceanside", "Escondido", "Carlsbad", "Vista", "San Marcos", "Encinitas", "National City", "La Mesa"]
+    },
+    {
+      "id": "denver",
+      "name": "Denver",
+      "states": ["CO"],
+      "keywords": ["Denver", "Aurora", "Lakewood", "Fort Collins", "Colorado Springs", "Arvada", "Westminster", "Pueblo", "Centennial", "Boulder", "Thornton", "Englewood", "Broomfield"]
+    },
+    {
+      "id": "orlando",
+      "name": "Orlando",
+      "states": ["FL"],
+      "keywords": ["Orlando", "Kissimmee", "Sanford", "Daytona Beach", "Lake Mary", "Altamonte Springs", "Winter Park", "Ocoee", "Palm Bay", "Melbourne"]
+    }
+  ]
+}

@@ -4,7 +4,7 @@
       "id": "mid-america-apartment-communities",
       "name": "Mid-America Apartment Communities",
       "aliases": ["MAA", "Mid-America"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -12,7 +12,7 @@
       "id": "avalonbay-communities",
       "name": "AvalonBay Communities",
       "aliases": ["AVB", "AvalonBay"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A"],
       "propertyType": "Conventional MF"
     },
@@ -20,7 +20,7 @@
       "id": "the-related-companies",
       "name": "The Related Companies",
       "aliases": ["Related", "Related Companies"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -28,7 +28,7 @@
       "id": "equity-residential",
       "name": "Equity Residential",
       "aliases": ["EQR", "Equity"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A"],
       "propertyType": "Conventional MF"
     },
@@ -36,7 +36,7 @@
       "id": "monarch-investment",
       "name": "Monarch Investment",
       "aliases": ["Monarch"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class B"],
       "propertyType": "Conventional MF"
     },
@@ -44,7 +44,7 @@
       "id": "weidner-property-management",
       "name": "Weidner Property Management",
       "aliases": ["Weidner"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -52,7 +52,7 @@
       "id": "edward-rose-and-sons",
       "name": "Edward Rose & Sons",
       "aliases": ["Edward Rose"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -60,7 +60,7 @@
       "id": "fpa-multifamily",
       "name": "FPA Multifamily",
       "aliases": ["FPA"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class B"],
       "propertyType": "Conventional MF"
     },
@@ -68,7 +68,7 @@
       "id": "bridge-investment-group",
       "name": "Bridge Investment Group",
       "aliases": ["Bridge Investment", "Bridge"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -76,7 +76,7 @@
       "id": "starlight-investments",
       "name": "Starlight Investments",
       "aliases": ["Starlight"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -84,7 +84,7 @@
       "id": "essex-property-trust",
       "name": "Essex Property Trust",
       "aliases": ["Essex", "ESS"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A"],
       "propertyType": "Conventional MF"
     },
@@ -92,7 +92,7 @@
       "id": "harbor-group-international",
       "name": "Harbor Group International",
       "aliases": ["Harbor Group", "HGI"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -100,7 +100,7 @@
       "id": "camden-property-trust",
       "name": "Camden Property Trust",
       "aliases": ["Camden", "CPT"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A"],
       "propertyType": "Conventional MF"
     },
@@ -108,7 +108,7 @@
       "id": "starwood-real-estate-income-trust",
       "name": "Starwood Real Estate Income Trust",
       "aliases": ["Starwood", "SREIT"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -116,7 +116,7 @@
       "id": "udr-inc",
       "name": "UDR Inc",
       "aliases": ["UDR", "United Dominion Realty"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A"],
       "propertyType": "Conventional MF"
     },
@@ -124,7 +124,7 @@
       "id": "gid-investment-advisors",
       "name": "GID Investment Advisors",
       "aliases": ["GID"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A"],
       "propertyType": "Conventional MF"
     },
@@ -132,7 +132,7 @@
       "id": "the-michaels-organization",
       "name": "The Michaels Organization",
       "aliases": ["Michaels", "Michaels Organization"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -140,7 +140,7 @@
       "id": "canadian-apartment-properties-reit",
       "name": "Canadian Apartment Properties REIT",
       "aliases": ["CAPREIT", "Canadian Apartment"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -148,7 +148,7 @@
       "id": "truamerica-multifamily",
       "name": "TruAmerica Multifamily",
       "aliases": ["TruAmerica"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class B"],
       "propertyType": "Conventional MF"
     },
@@ -156,7 +156,7 @@
       "id": "dominium",
       "name": "Dominium",
       "aliases": [],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -164,7 +164,7 @@
       "id": "fairfield-residential",
       "name": "Fairfield Residential",
       "aliases": ["Fairfield"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -172,7 +172,7 @@
       "id": "garden-homes",
       "name": "Garden Homes",
       "aliases": [],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class B"],
       "propertyType": "Conventional MF"
     },
@@ -180,7 +180,7 @@
       "id": "mill-creek-residential",
       "name": "Mill Creek Residential",
       "aliases": ["Mill Creek"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A"],
       "propertyType": "Conventional MF"
     },
@@ -188,7 +188,7 @@
       "id": "alliance-residential-company",
       "name": "Alliance Residential Company",
       "aliases": ["Alliance Residential", "Alliance"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -196,7 +196,7 @@
       "id": "hunt-companies",
       "name": "Hunt Companies",
       "aliases": ["Hunt"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -204,7 +204,7 @@
       "id": "berkshire-residential-investments",
       "name": "Berkshire Residential Investments",
       "aliases": ["Berkshire Residential", "Berkshire"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -212,7 +212,7 @@
       "id": "cws-capital-partners",
       "name": "CWS Capital Partners",
       "aliases": ["CWS"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -220,7 +220,7 @@
       "id": "independence-realty-trust",
       "name": "Independence Realty Trust",
       "aliases": ["IRT", "Independence Realty"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class B"],
       "propertyType": "Conventional MF"
     },
@@ -228,7 +228,7 @@
       "id": "knightvest-management",
       "name": "Knightvest Management",
       "aliases": ["Knightvest"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class B"],
       "propertyType": "Conventional MF"
     },
@@ -236,7 +236,7 @@
       "id": "amli-residential",
       "name": "AMLI Residential",
       "aliases": ["AMLI"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A"],
       "propertyType": "Conventional MF"
     },
@@ -244,7 +244,7 @@
       "id": "eaton-vance-real-estate",
       "name": "Eaton Vance Real Estate",
       "aliases": ["Eaton Vance"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -252,7 +252,7 @@
       "id": "the-nrp-group",
       "name": "The NRP Group",
       "aliases": ["NRP Group", "NRP"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -260,7 +260,7 @@
       "id": "waterton",
       "name": "Waterton",
       "aliases": [],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -268,7 +268,7 @@
       "id": "kennedy-wilson",
       "name": "Kennedy Wilson",
       "aliases": ["KW"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -276,7 +276,7 @@
       "id": "kushner-companies",
       "name": "Kushner Companies",
       "aliases": ["Kushner"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -284,7 +284,7 @@
       "id": "wood-partners",
       "name": "Wood Partners",
       "aliases": ["Wood"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A"],
       "propertyType": "Conventional MF"
     },
@@ -292,7 +292,7 @@
       "id": "jrk-property-holdings",
       "name": "JRK Property Holdings",
       "aliases": ["JRK"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -300,7 +300,7 @@
       "id": "venterra-realty",
       "name": "Venterra Realty",
       "aliases": ["Venterra"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -308,7 +308,7 @@
       "id": "sentinel-real-estate-corporation",
       "name": "Sentinel Real Estate Corporation",
       "aliases": ["Sentinel Real Estate", "Sentinel"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -316,7 +316,7 @@
       "id": "air-communities",
       "name": "AIR Communities",
       "aliases": ["AIR", "Aimco"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A"],
       "propertyType": "Conventional MF"
     },
@@ -324,7 +324,7 @@
       "id": "bell-partners",
       "name": "Bell Partners",
       "aliases": ["Bell"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -332,7 +332,7 @@
       "id": "continental-properties",
       "name": "Continental Properties",
       "aliases": ["Continental"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -340,7 +340,7 @@
       "id": "mlg-asset-management",
       "name": "MLG Asset Management",
       "aliases": ["MLG"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -348,7 +348,7 @@
       "id": "general-services-corporation",
       "name": "General Services Corporation",
       "aliases": ["General Services", "GSC"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -356,7 +356,7 @@
       "id": "carmel-partners",
       "name": "Carmel Partners",
       "aliases": ["Carmel"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A"],
       "propertyType": "Conventional MF"
     },
@@ -364,7 +364,7 @@
       "id": "hazelview-investments",
       "name": "Hazelview Investments",
       "aliases": ["Hazelview"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -372,7 +372,7 @@
       "id": "trammell-crow-residential",
       "name": "Trammell Crow Residential",
       "aliases": ["Trammell Crow", "TCR"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A"],
       "propertyType": "Conventional MF"
     },
@@ -380,7 +380,7 @@
       "id": "post-vestment-group",
       "name": "Post Vestment Group",
       "aliases": ["Post Vestment"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -388,7 +388,7 @@
       "id": "pedcor-companies",
       "name": "Pedcor Companies",
       "aliases": ["Pedcor"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     },
@@ -396,7 +396,7 @@
       "id": "princeton-management",
       "name": "Princeton Management",
       "aliases": ["Princeton"],
-      "assignedRep": "Jack Thomasson",
+      "assignedRep": "Jack Harvey",
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     }

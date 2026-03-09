@@ -12,7 +12,8 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 function loadData() {
   const owners = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'owners.json'), 'utf8'));
   const assignments = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'assignments.json'), 'utf8'));
-  return { owners, assignments };
+  const markets = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'markets.json'), 'utf8'));
+  return { owners, assignments, markets };
 }
 
 // ---------------------------------------------------------------------------
@@ -85,36 +86,80 @@ function fuzzyMatch(query, candidates, threshold = 0.3) {
 }
 
 // ---------------------------------------------------------------------------
-// Market resolution
+// Top 20 MSA check
 // ---------------------------------------------------------------------------
 
-function getMarketReps(market, assignments) {
-  const { marketAssignments, regionAssignments } = assignments;
+/**
+ * Returns the matching MSA object if the market string falls within a Top 20
+ * MSA, or null if it does not.
+ *
+ * Matching uses whole-word comparison: the market string is tokenized and each
+ * keyword is checked as a full token match (or multi-word phrase match).
+ * This prevents short keywords like "LA" from falsely matching inside words
+ * like "Dallas" or "Orlando".
+ */
+function getTop20MSA(market, markets) {
+  if (!market || !markets) return null;
+  const mLower = market.toLowerCase();
+  // Tokenize the market string for word-boundary checks
+  const mTokens = mLower.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean);
 
-  // Direct market assignment first
-  const direct = marketAssignments.find(
-    a => normalize(a.market) === normalize(market)
-  );
-  if (direct) {
-    return { reps: direct.reps, source: 'market', label: direct.market };
+  for (const msa of markets.top20MSAs) {
+    const matched = msa.keywords.some(kw => {
+      const kwLower = kw.toLowerCase();
+      // Multi-word keywords: use substring match (phrase is specific enough)
+      if (kwLower.includes(' ')) return mLower.includes(kwLower);
+      // Single-word keywords: require exact token match to avoid false positives
+      return mTokens.includes(kwLower);
+    });
+    if (matched) return msa;
   }
+  return null;
+}
 
-  // Region fallback — derive state code from last token of market string (e.g. "Charlotte NC" → "NC")
+// ---------------------------------------------------------------------------
+// State-based regional resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Given a market string (e.g. "Dallas TX", "Miami FL", "Washington DC"),
+ * return all reps assigned to that market via stateAssignments.
+ *
+ * Matching logic:
+ *   - Extract state code from the last token of the market string.
+ *   - Find all stateAssignments whose states[] includes that code.
+ *   - For assignments with subMarkets[], only include if the market string
+ *     contains one of the sub-market keywords (case-insensitive).
+ *   - Assignments with no subMarkets[] always match their state.
+ *   - If sub-market filtering eliminates ALL state matches, fall back and
+ *     return every rep assigned to that state (with a warning flag).
+ */
+function getStateReps(market, assignments) {
+  const { stateAssignments } = assignments;
+  if (!stateAssignments) return null;
+
   const parts = market.trim().split(' ');
   const stateCode = parts[parts.length - 1].toUpperCase();
+  const marketNorm = market.toLowerCase();
 
-  for (const region of regionAssignments) {
-    if (!region.states.includes(stateCode)) continue;
+  const allForState = stateAssignments.filter(a => a.states.includes(stateCode));
+  if (allForState.length === 0) return null;
 
-    const excluded = (region.excludedMarkets || []).some(
-      m => normalize(m) === normalize(market)
-    );
-    if (excluded) continue;
+  const matched = allForState.filter(a => {
+    if (!a.subMarkets || a.subMarkets.length === 0) return true;
+    return a.subMarkets.some(sm => marketNorm.includes(sm.toLowerCase()));
+  });
 
-    return { reps: region.reps, source: 'region', label: region.region };
-  }
+  // If sub-market filtering zeroed out results, surface all state reps with a warning
+  const results = matched.length > 0 ? matched : allForState;
+  const fallback = matched.length === 0;
 
-  return null;
+  return {
+    reps: results.map(a => a.rep),
+    details: results.map(a => ({ rep: a.rep, focus: a.focus || null })),
+    stateCode,
+    fallback
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -148,14 +193,15 @@ function logCheck(entry) {
  *   propertyType  {string} — optional, e.g. "Conventional MF"
  *
  * Resolution hierarchy:
- *   1. Top 50 owner                          → Jack Thomasson
- *   2. Lease-up + NOT Top 50                 → Xavier
- *   3. Owner-level assignment (beats market) → assigned rep
- *   4. Market-level fallback                 → market/region rep(s)
+ *   1. Top 50 owner                                    → Jack Harvey
+ *   2. Lease-up + NOT Top 50 + no owner relationship   → Xavier
+ *   3. Owner-level assignment (beats market/state)     → assigned rep
+ *      — covers ALL properties nationwide incl. referrals
+ *   4. State-based regional fallback                   → state rep(s)
  *   5. Unassigned
  */
 function resolve(input) {
-  const { owners, assignments } = loadData();
+  const { owners, assignments, markets } = loadData();
   const { ownerName, market, isLeaseUp } = input;
 
   const result = {
@@ -172,30 +218,18 @@ function resolve(input) {
   // ── Tier 1: Top 50 ────────────────────────────────────────────────────────
   const top50Hit = fuzzyMatch(ownerName, owners.top50);
   if (top50Hit) {
-    result.rep = 'Jack Thomasson';
+    result.rep = 'Jack Harvey';
     result.rule = 'TOP_50';
     result.matchedOwner = top50Hit.match.name;
     result.explanation =
       `"${ownerName}" matched Top 50 owner "${top50Hit.match.name}" ` +
       `(${top50Hit.type} match, confidence ${pct(top50Hit.score)}). ` +
-      `All Top 50 owners are assigned to Jack Thomasson regardless of market.`;
+      `All Top 50 owners are assigned to Jack Harvey regardless of market.`;
     finalize(result);
     return result;
   }
 
-  // ── Tier 2: Lease-up (owner NOT in Top 50) ───────────────────────────────
-  if (isLeaseUp) {
-    result.rep = 'Xavier';
-    result.rule = 'LEASE_UP';
-    result.explanation =
-      `"${ownerName}" is not a Top 50 owner, and this property is flagged as lease-up. ` +
-      `Lease-up properties with non-Top-50 owners route to Xavier.`;
-    finalize(result);
-    return result;
-  }
-
-  // ── Tier 3: Owner-level assignment ───────────────────────────────────────
-  // Build a searchable list from ownerAssignments (each has .owner + .aliases)
+  // Build owner-level candidate list — used by both Tier 2 and Tier 3
   const ownerCandidates = assignments.ownerAssignments.map(a => ({
     name: a.owner,
     aliases: a.aliases || [],
@@ -203,6 +237,44 @@ function resolve(input) {
   }));
   const ownerHit = fuzzyMatch(ownerName, ownerCandidates);
 
+  // ── Tier 2: Xavier lease-up hunting ──────────────────────────────────────
+  // Xavier gets a lease-up property only when ALL three conditions are met:
+  //   a) Owner is NOT in the Top 50         (passed Tier 1)
+  //   b) No rep already owns this owner relationship
+  //   c) Property is in a Top 20 MSA
+  // If (b) or (c) fail, fall through — the property routes to the owner's rep
+  // or the regional rep instead.
+  if (isLeaseUp) {
+    if (ownerHit) {
+      // Condition (b) fails: a rep owns this relationship — skip Xavier entirely,
+      // Tier 3 will assign to that rep.
+    } else {
+      const msa = getTop20MSA(market, markets);
+      if (msa) {
+        result.rep = 'Xavier';
+        result.rule = 'LEASE_UP';
+        result.explanation =
+          `Lease-up property in "${market}" (${msa.name} MSA). ` +
+          `Owner "${ownerName}" is not Top 50 and has no existing rep relationship. ` +
+          `All three Xavier conditions met — routes to Xavier.`;
+        finalize(result);
+        return result;
+      } else {
+        // Condition (c) fails: not a Top 20 MSA — fall through to regional rep
+        const msaNote = market
+          ? `"${market}" is not in a Top 20 MSA`
+          : `no market provided, cannot confirm Top 20 MSA`;
+        result.warnings.push(
+          `Lease-up flagged but ${msaNote}. Xavier is restricted to Top 20 MSAs. ` +
+          `Routing to regional rep instead.`
+        );
+      }
+    }
+  }
+
+  // ── Tier 3: Owner-level assignment ───────────────────────────────────────
+  // Owner-level assignments cover ALL properties for that owner nationwide,
+  // including referrals, regardless of market or state.
   if (ownerHit) {
     const assignment = ownerHit.match._raw;
     result.rep = assignment.rep;
@@ -211,16 +283,16 @@ function resolve(input) {
     result.explanation =
       `"${ownerName}" matched owner-level assignment for "${assignment.owner}" ` +
       `(${ownerHit.type} match, confidence ${pct(ownerHit.score)}). ` +
-      `Owner-level assignments take precedence over market assignments. ` +
+      `Owner-level assignments cover all properties for this owner nationwide, ` +
+      `including referrals, and take precedence over state/market assignments. ` +
       `Assigned to ${assignment.rep}.`;
 
-    // Warn if a market was provided and it has a different rep
     if (market) {
-      const marketResult = getMarketReps(market, assignments);
-      if (marketResult && !marketResult.reps.includes(assignment.rep)) {
+      const stateResult = getStateReps(market, assignments);
+      if (stateResult && !stateResult.reps.includes(assignment.rep)) {
         result.warnings.push(
-          `Market "${market}" is assigned to ${marketResult.reps.join('/')} but owner-level ` +
-          `assignment overrides this to ${assignment.rep}. No conflict — owner wins.`
+          `State/market "${market}" is covered by ${stateResult.reps.join('/')} ` +
+          `but owner-level assignment overrides to ${assignment.rep}. No conflict — owner wins.`
         );
       }
     }
@@ -229,20 +301,30 @@ function resolve(input) {
     return result;
   }
 
-  // ── Tier 4: Market-level fallback ────────────────────────────────────────
+  // ── Tier 4: State-based regional fallback ────────────────────────────────
   if (market) {
-    const marketResult = getMarketReps(market, assignments);
-    if (marketResult) {
-      result.rep = marketResult.reps;
-      result.rule = 'MARKET_FALLBACK';
+    const stateResult = getStateReps(market, assignments);
+    if (stateResult) {
+      result.rep = stateResult.reps;
+      result.rule = 'STATE_FALLBACK';
+
+      const repList = stateResult.details
+        .map(d => d.focus ? `${d.rep} (${d.focus})` : d.rep)
+        .join(', ');
+
       result.explanation =
         `No Top 50, lease-up, or owner-level assignment found for "${ownerName}". ` +
-        `Falling back to ${marketResult.source} assignment for "${market}" → ` +
-        `${marketResult.label}. Assigned to: ${marketResult.reps.join(', ')}.`;
+        `Falling back to state assignment for "${market}" (${stateResult.stateCode}). ` +
+        `Assigned to: ${repList}.`;
 
-      if (marketResult.reps.length > 1) {
+      if (stateResult.fallback) {
         result.warnings.push(
-          `Multiple reps cover this market (${marketResult.reps.join(', ')}). ` +
+          `Market "${market}" did not match any sub-market focus area within ${stateResult.stateCode}. ` +
+          `Returning all ${stateResult.stateCode} reps — coordinate to assign a primary.`
+        );
+      } else if (stateResult.reps.length > 1) {
+        result.warnings.push(
+          `Multiple reps cover this market (${stateResult.reps.join(', ')}). ` +
           `Coordinate coverage or assign a primary.`
         );
       }
@@ -257,7 +339,8 @@ function resolve(input) {
   result.explanation =
     `No assignment found for "${ownerName}"` +
     (market ? ` in market "${market}"` : '') +
-    `. Not in Top 50, not a lease-up, no owner-level assignment, and no market assignment found.`;
+    `. Not in Top 50, not a qualifying lease-up, no owner-level assignment, ` +
+    `and no state assignment found.`;
   result.warnings.push('This lead is unassigned. Manual assignment required.');
   finalize(result);
   return result;
@@ -285,4 +368,4 @@ function finalize(result) {
   });
 }
 
-module.exports = { resolve, fuzzyMatch, getMarketReps };
+module.exports = { resolve, fuzzyMatch, getStateReps };
