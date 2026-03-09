@@ -143,6 +143,44 @@ Disqualified leads are rejected before reaching the engine.
 
 ---
 
+## Auto-Enrichment (Web Search + Cache)
+
+The CLI automatically fills in missing context before running resolution. Enrichment fires in three scenarios:
+
+1. **Cache hit** — if a previous lookup already discovered this property/owner, the saved data is applied immediately with no web request.
+2. **Property name detected** — if the query contains a number or lacks business-entity terms (e.g. `"Axis 201"`, `"One Park"`), the CLI treats it as a property name and searches for the owner, market, HQ, and property class before resolving.
+3. **Owner known but no HQ or market provided** — the CLI searches for the owner's headquarters to enable state-based fallback.
+
+### What gets discovered and used
+- **Owner name** — replaces the property name query for resolution
+- **Market** — enables Xavier MSA check and state fallback
+- **Owner HQ** — drives Tier 4 regional assignment (owner's state, not property state)
+- **Property class** — passed to the qualification gate if the user didn't supply `--class`; "luxury" maps to Class A; affordable/LIHTC signals to disqualify
+
+### Cache (`data/cache.json`)
+Every successful enrichment result is saved to `data/cache.json` keyed by the normalized query string. On subsequent checks of the same property or owner, the CLI uses the cached values and skips the web request. The cache is append-only JSON; entries can be removed manually if stale.
+
+### Web search backend
+Enrichment uses DuckDuckGo's free JSON API (`src/search.js`) — no API key required. Results are best-effort: well-known properties and large management companies resolve cleanly; very small or obscure owners may not return useful data. The CLI prints what it found and falls back gracefully when enrichment fails.
+
+**In Claude Code sessions:** Claude's built-in `WebSearch` tool is more reliable than DuckDuckGo for specific property lookups. Claude should run a web search first and pass the enriched flags explicitly (e.g. `--hq "Elmsford NY" --market "New Haven CT"`) for the most accurate results. When a user asks to check a property or owner, Claude should auto-enrich via WebSearch before running the CLI — do not ask the user for information that a web search can answer.
+
+```bash
+# Property name — CLI auto-searches for owner + location + class, caches result
+node src/cli.js check "Axis 201"
+
+# Same query again — served from cache, no web request
+node src/cli.js check "Axis 201"
+
+# Owner only — CLI searches for HQ to enable regional fallback, caches HQ
+node src/cli.js check "Paredim Partners"
+
+# Fully specified — no web search needed, fastest path
+node src/cli.js check "Paredim Partners" --hq "Elmsford NY" --market "New Haven CT"
+```
+
+---
+
 ## Running
 
 ```bash

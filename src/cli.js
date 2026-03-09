@@ -24,8 +24,30 @@
  *   node src/cli.js check "Some Owner" --class "Class C"
  */
 
+const fs   = require('fs');
+const path = require('path');
+
 const { resolve } = require('./engine');
 const { qualify } = require('./qualify');
+const { enrichFromPropertyName, enrichOwnerHQ, looksLikePropertyName } = require('./search');
+
+// ---------------------------------------------------------------------------
+// Enrichment cache  (data/cache.json)
+// ---------------------------------------------------------------------------
+
+const CACHE_PATH = path.join(__dirname, '..', 'data', 'cache.json');
+
+function loadCache() {
+  try { return JSON.parse(fs.readFileSync(CACHE_PATH, 'utf8')); } catch { return {}; }
+}
+
+function saveCache(cache) {
+  try { fs.writeFileSync(CACHE_PATH, JSON.stringify(cache, null, 2)); } catch { /* non-fatal */ }
+}
+
+function cacheKey(query) {
+  return query.toLowerCase().replace(/\s+/g, ' ').trim();
+}
 
 // ---------------------------------------------------------------------------
 // Argument parsing
@@ -185,45 +207,120 @@ ${BOLD}Examples:${RESET}
 
 const [,, command, ...rest] = process.argv;
 
-if (command === 'check') {
-  if (!rest.length) {
-    console.error('\x1b[31mError: Please provide an owner name.\x1b[0m');
+(async () => {
+  if (command === 'check') {
+    if (!rest.length) {
+      console.error('\x1b[31mError: Please provide an owner or property name.\x1b[0m');
+      printUsage();
+      process.exit(1);
+    }
+
+    let input = parseArgs(rest);
+
+    if (!input.ownerName) {
+      console.error('\x1b[31mError: Could not parse a name from arguments.\x1b[0m');
+      printUsage();
+      process.exit(1);
+    }
+
+    // ── Auto-enrichment ────────────────────────────────────────────────────
+    // First check the local cache. If no hit, search the web and cache results.
+    // Discovered owner, market, HQ, and property class are all applied to input
+    // so downstream qualification and resolution use the enriched data.
+
+    const cache = loadCache();
+    const key   = cacheKey(input.ownerName);
+
+    if (cache[key]) {
+      // ── Cache hit ─────────────────────────────────────────────────────────
+      const cached = cache[key];
+      console.log(`\n\x1b[2m  Using cached data for "${input.ownerName}":\x1b[0m`);
+      if (cached.ownerName) {
+        console.log(`\x1b[2m    Owner  : ${cached.ownerName}\x1b[0m`);
+        input.ownerName = cached.ownerName;
+      }
+      if (cached.market && !input.market) {
+        console.log(`\x1b[2m    Market : ${cached.market}\x1b[0m`);
+        input.market = cached.market;
+      }
+      if (cached.ownerHQ && !input.ownerHQ) {
+        console.log(`\x1b[2m    HQ     : ${cached.ownerHQ}\x1b[0m`);
+        input.ownerHQ = cached.ownerHQ;
+      }
+      if (cached.propertyClass && !input.propertyClass) {
+        console.log(`\x1b[2m    Class  : ${cached.propertyClass}\x1b[0m`);
+        input.propertyClass = cached.propertyClass;
+      }
+
+    } else if (looksLikePropertyName(input.ownerName)) {
+      // ── Property name — search for owner + location + class ───────────────
+      console.log(`\n\x1b[2m  Searching web for "${input.ownerName}"...\x1b[0m`);
+      const enriched = await enrichFromPropertyName(input.ownerName);
+
+      if (enriched.ownerName || enriched.market || enriched.ownerHQ || enriched.propertyClass) {
+        console.log(`\x1b[2m  Enriched from web:\x1b[0m`);
+        const toCache = { cachedAt: new Date().toISOString() };
+
+        if (enriched.ownerName) {
+          console.log(`\x1b[2m    Owner  : ${enriched.ownerName}\x1b[0m`);
+          input.ownerName = toCache.ownerName = enriched.ownerName;
+        }
+        if (enriched.market && !input.market) {
+          console.log(`\x1b[2m    Market : ${enriched.market}\x1b[0m`);
+          input.market = toCache.market = enriched.market;
+        }
+        if (enriched.ownerHQ && !input.ownerHQ) {
+          console.log(`\x1b[2m    HQ     : ${enriched.ownerHQ}\x1b[0m`);
+          input.ownerHQ = toCache.ownerHQ = enriched.ownerHQ;
+        }
+        if (enriched.propertyClass && !input.propertyClass) {
+          console.log(`\x1b[2m    Class  : ${enriched.propertyClass}\x1b[0m`);
+          input.propertyClass = toCache.propertyClass = enriched.propertyClass;
+        }
+
+        cache[key] = toCache;
+        saveCache(cache);
+      } else {
+        console.log(`\x1b[33m  Could not enrich "${input.ownerName}" from web — proceeding with available data.\x1b[0m`);
+      }
+
+    } else if (!input.ownerHQ && !input.market) {
+      // ── Owner name known but no location — search for HQ ──────────────────
+      console.log(`\n\x1b[2m  Searching for HQ of "${input.ownerName}"...\x1b[0m`);
+      const hq = await enrichOwnerHQ(input.ownerName);
+      if (hq) {
+        console.log(`\x1b[2m    HQ     : ${hq}\x1b[0m`);
+        input.ownerHQ = hq;
+        cache[key] = { ownerHQ: hq, cachedAt: new Date().toISOString() };
+        saveCache(cache);
+      }
+    }
+
+    // ── Qualification gate ─────────────────────────────────────────────────
+    const qual = qualify(input);
+
+    if (!qual.qualified) {
+      console.log('');
+      console.log('\x1b[31m' + BOLD + ' LEAD DISQUALIFIED' + RESET);
+      console.log(line('─'));
+      qual.reasons.forEach(r => console.log(` ✗  ${r}`));
+      console.log('');
+      console.log(` This property/owner does not meet Class A/B Conventional MF`);
+      console.log(` criteria. No ownership resolution performed.`);
+      console.log('');
+      process.exit(0);
+    }
+
+    if (qual.flags.length > 0) {
+      console.log('');
+      console.log('\x1b[33mQualification notes:\x1b[0m');
+      qual.flags.forEach(f => console.log(`  ℹ  ${f}`));
+    }
+
+    const result = resolve(input);
+    printResult(result);
+
+  } else {
     printUsage();
-    process.exit(1);
   }
-
-  const input = parseArgs(rest);
-
-  if (!input.ownerName) {
-    console.error('\x1b[31mError: Could not parse owner name from arguments.\x1b[0m');
-    printUsage();
-    process.exit(1);
-  }
-
-  // Qualification gate
-  const qual = qualify(input);
-
-  if (!qual.qualified) {
-    console.log('');
-    console.log('\x1b[31m' + BOLD + ' LEAD DISQUALIFIED' + RESET);
-    console.log(line('─'));
-    qual.reasons.forEach(r => console.log(` ✗  ${r}`));
-    console.log('');
-    console.log(` This property/owner does not meet Class A/B Conventional MF`);
-    console.log(` criteria. No ownership resolution performed.`);
-    console.log('');
-    process.exit(0);
-  }
-
-  if (qual.flags.length > 0) {
-    console.log('');
-    console.log('\x1b[33mQualification notes:\x1b[0m');
-    qual.flags.forEach(f => console.log(`  ℹ  ${f}`));
-  }
-
-  const result = resolve(input);
-  printResult(result);
-
-} else {
-  printUsage();
-}
+})();
