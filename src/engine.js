@@ -29,9 +29,34 @@ function normalize(str) {
     .trim();
 }
 
+// Words that appear in many company names and carry no discriminating signal.
+// Excluded from word-level scoring to prevent false positives like
+// "Lennar Multifamily" → "FPA Multifamily" or "The Graham Companies" → "The Related Companies".
+const STOPWORDS = new Set([
+  // Articles / conjunctions / prepositions
+  'the', 'a', 'an', 'of', 'and', 'or', 'in', 'at', 'by', 'for',
+  // Legal entity suffixes
+  'llc', 'inc', 'corp', 'ltd', 'co',
+  // Generic real estate / business descriptors
+  'company', 'companies', 'group', 'capital', 'properties', 'property',
+  'management', 'residential', 'real', 'estate', 'investments', 'investment',
+  'trust', 'realty', 'partners', 'multifamily', 'apartment', 'apartments',
+  'communities', 'community', 'housing', 'homes', 'assets', 'fund',
+  'holdings', 'services', 'solutions', 'ventures', 'advisors', 'advisory'
+]);
+
 /**
  * Score how well a query matches a candidate name + aliases.
  * Returns a score 0–1 and a match type string.
+ *
+ * Contains-match direction rule:
+ *   name.includes(q)  — always valid (e.g. "Camden" found inside "Camden Property Trust")
+ *   q.includes(name)  — only valid if name has 2+ words; prevents single generic-word
+ *                       aliases (e.g. "Related") from matching inside longer queries
+ *                       (e.g. "Related Group")
+ *
+ * Word-level scoring strips STOPWORDS from both sides before comparing, so
+ * shared generic words like "Companies", "Group", "Multifamily" don't drive matches.
  */
 function scoreMatch(query, candidateName, aliases = []) {
   const q = normalize(query);
@@ -41,18 +66,24 @@ function scoreMatch(query, candidateName, aliases = []) {
     // Exact
     if (q === name) return { score: 1.0, type: 'exact' };
 
-    // Full substring either direction
-    if (name.includes(q) || q.includes(name)) {
+    // name found inside query — always valid
+    if (name.includes(q)) return { score: 0.9, type: 'contains' };
+
+    // query contains name — only if name is 2+ words (guards against short generic aliases)
+    if (q.includes(name) && name.split(' ').filter(Boolean).length >= 2) {
       return { score: 0.9, type: 'contains' };
     }
   }
 
-  // Word-level matching against all names
-  const qWords = q.split(' ').filter(w => w.length > 2);
+  // Word-level matching — strip stopwords from both sides before comparing
+  const qWords = q.split(' ').filter(w => w.length > 2 && !STOPWORDS.has(w));
+  if (qWords.length === 0) return { score: 0, type: 'none' };
+
   let bestWordScore = 0;
 
   for (const name of allNames) {
-    const nameWords = name.split(' ');
+    const nameWords = name.split(' ').filter(w => !STOPWORDS.has(w));
+    if (nameWords.length === 0) continue;
     const hits = qWords.filter(w => nameWords.includes(w));
     if (hits.length > 0) {
       const score = 0.65 * (hits.length / Math.max(qWords.length, nameWords.length));
@@ -69,8 +100,11 @@ function scoreMatch(query, candidateName, aliases = []) {
  * Find the best fuzzy match for ownerName in a list of candidates.
  * Each candidate must have a `name` field and optionally an `aliases` array.
  * Returns null if no match exceeds the threshold.
+ *
+ * Threshold raised to 0.4 — with stopwords stripped, a 40% word-overlap
+ * score represents meaningful content-word similarity, not coincidental hits.
  */
-function fuzzyMatch(query, candidates, threshold = 0.3) {
+function fuzzyMatch(query, candidates, threshold = 0.4) {
   let best = null;
   let bestScore = 0;
 
