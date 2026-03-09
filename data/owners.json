@@ -400,5 +400,15 @@
       "propertyClasses": ["Class A", "Class B"],
       "propertyType": "Conventional MF"
     }
+  ],
+  "knownOwners": [
+    {
+      "id": "related-group",
+      "name": "Related Group",
+      "aliases": ["The Related Group", "Related Group of Companies"],
+      "isTop50": false,
+      "hqState": "FL",
+      "notes": "Miami-based developer (Jorge Pérez). Distinct entity from 'The Related Companies' (Stephen Ross, NY), which IS Top 50."
+    }
   ]
 }

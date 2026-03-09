@@ -276,6 +276,7 @@ function logCheck(entry) {
  *   propertyType  {string} — optional, e.g. "Conventional MF"
  *
  * Resolution hierarchy:
+ *   0. Known non-Top-50 owner (disambiguation guard)   → skip Tier 1, fall through
  *   1. Top 50 owner                                    → Jack Harvey
  *   2. Lease-up + NOT Top 50 + no owner relationship   → Xavier
  *   3. Owner-level assignment (beats market/state)     → assigned rep
@@ -298,8 +299,25 @@ function resolve(input) {
     warnings: []
   };
 
+  // ── Tier 0: Known non-Top-50 disambiguation ───────────────────────────────
+  // Some owners share a distinctive word with a Top 50 entry but are different
+  // entities (e.g. "Related Group" vs "The Related Companies"). Entries in
+  // owners.knownOwners with isTop50: false are matched first at high confidence
+  // (0.85+) to explicitly skip Top 50 fuzzy matching for those names.
+  let skipTop50 = false;
+  if (owners.knownOwners && owners.knownOwners.length > 0) {
+    const knownHit = fuzzyMatch(ownerName, owners.knownOwners, 0.85);
+    if (knownHit) {
+      skipTop50 = true;
+      result.warnings.push(
+        `"${ownerName}" matched known non-Top-50 owner "${knownHit.match.name}". ` +
+        `Top 50 fuzzy matching skipped. ${knownHit.match.notes || ''}`
+      );
+    }
+  }
+
   // ── Tier 1: Top 50 ────────────────────────────────────────────────────────
-  const top50Hit = fuzzyMatch(ownerName, owners.top50);
+  const top50Hit = !skipTop50 && fuzzyMatch(ownerName, owners.top50);
   if (top50Hit) {
     result.rep = 'Jack Harvey';
     result.rule = 'TOP_50';
