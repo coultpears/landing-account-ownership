@@ -118,29 +118,70 @@ function getTop20MSA(market, markets) {
 }
 
 // ---------------------------------------------------------------------------
+// State code resolution
+// ---------------------------------------------------------------------------
+
+const STATE_NAMES = {
+  'alabama': 'AL', 'alaska': 'AK', 'arizona': 'AZ', 'arkansas': 'AR',
+  'california': 'CA', 'colorado': 'CO', 'connecticut': 'CT', 'delaware': 'DE',
+  'florida': 'FL', 'georgia': 'GA', 'hawaii': 'HI', 'idaho': 'ID',
+  'illinois': 'IL', 'indiana': 'IN', 'iowa': 'IA', 'kansas': 'KS',
+  'kentucky': 'KY', 'louisiana': 'LA', 'maine': 'ME', 'maryland': 'MD',
+  'massachusetts': 'MA', 'michigan': 'MI', 'minnesota': 'MN', 'mississippi': 'MS',
+  'missouri': 'MO', 'montana': 'MT', 'nebraska': 'NE', 'nevada': 'NV',
+  'new hampshire': 'NH', 'new jersey': 'NJ', 'new mexico': 'NM', 'new york': 'NY',
+  'north carolina': 'NC', 'north dakota': 'ND', 'ohio': 'OH', 'oklahoma': 'OK',
+  'oregon': 'OR', 'pennsylvania': 'PA', 'rhode island': 'RI', 'south carolina': 'SC',
+  'south dakota': 'SD', 'tennessee': 'TN', 'texas': 'TX', 'utah': 'UT',
+  'vermont': 'VT', 'virginia': 'VA', 'washington': 'WA', 'west virginia': 'WV',
+  'wisconsin': 'WI', 'wyoming': 'WY', 'district of columbia': 'DC'
+};
+
+/**
+ * Extract a 2-letter state code from a location string.
+ * Accepts: "VA", "McLean VA", "Virginia", "virginia", "Atlanta GA", etc.
+ */
+function extractStateCode(locationStr) {
+  const str = locationStr.trim();
+  const lastToken = str.split(' ').pop().toUpperCase();
+
+  // Standard 2-letter code as last token
+  if (/^[A-Z]{2}$/.test(lastToken)) return lastToken;
+
+  // Full state name (whole string or substring)
+  const lower = str.toLowerCase();
+  // Check longest matches first to handle "west virginia" before "virginia"
+  const sortedNames = Object.keys(STATE_NAMES).sort((a, b) => b.length - a.length);
+  for (const name of sortedNames) {
+    if (lower.includes(name)) return STATE_NAMES[name];
+  }
+
+  return lastToken; // last resort
+}
+
+// ---------------------------------------------------------------------------
 // State-based regional resolution
 // ---------------------------------------------------------------------------
 
 /**
- * Given a market string (e.g. "Dallas TX", "Miami FL", "Washington DC"),
- * return all reps assigned to that market via stateAssignments.
+ * Given a location string (owner HQ or property market), return all reps
+ * assigned to that state via stateAssignments.
  *
  * Matching logic:
- *   - Extract state code from the last token of the market string.
+ *   - Extract state code via extractStateCode().
  *   - Find all stateAssignments whose states[] includes that code.
- *   - For assignments with subMarkets[], only include if the market string
+ *   - For assignments with subMarkets[], only include if the location string
  *     contains one of the sub-market keywords (case-insensitive).
  *   - Assignments with no subMarkets[] always match their state.
  *   - If sub-market filtering eliminates ALL state matches, fall back and
  *     return every rep assigned to that state (with a warning flag).
  */
-function getStateReps(market, assignments) {
+function getStateReps(location, assignments) {
   const { stateAssignments } = assignments;
   if (!stateAssignments) return null;
 
-  const parts = market.trim().split(' ');
-  const stateCode = parts[parts.length - 1].toUpperCase();
-  const marketNorm = market.toLowerCase();
+  const stateCode = extractStateCode(location);
+  const marketNorm = location.toLowerCase();
 
   const allForState = stateAssignments.filter(a => a.states.includes(stateCode));
   if (allForState.length === 0) return null;
@@ -160,6 +201,14 @@ function getStateReps(market, assignments) {
     stateCode,
     fallback
   };
+}
+
+/**
+ * Extract just the state code from a location string — thin wrapper
+ * used when callers only need the code without a full rep lookup.
+ */
+function stateCodeOf(locationStr) {
+  return extractStateCode(locationStr);
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +251,7 @@ function logCheck(entry) {
  */
 function resolve(input) {
   const { owners, assignments, markets } = loadData();
-  const { ownerName, market, isLeaseUp } = input;
+  const { ownerName, market, isLeaseUp, ownerHQ } = input;
 
   const result = {
     input,
@@ -302,8 +351,13 @@ function resolve(input) {
   }
 
   // ── Tier 4: State-based regional fallback ────────────────────────────────
-  if (market) {
-    const stateResult = getStateReps(market, assignments);
+  // Per policy: ownership resolves on OWNER HQ STATE, not property location.
+  // Use ownerHQ if provided; fall back to market only if HQ is unknown.
+  const lookupStr = ownerHQ || market;
+  const usingHQ = !!ownerHQ;
+
+  if (lookupStr) {
+    const stateResult = getStateReps(lookupStr, assignments);
     if (stateResult) {
       result.rep = stateResult.reps;
       result.rule = 'STATE_FALLBACK';
@@ -314,17 +368,34 @@ function resolve(input) {
 
       result.explanation =
         `No Top 50, lease-up, or owner-level assignment found for "${ownerName}". ` +
-        `Falling back to state assignment for "${market}" (${stateResult.stateCode}). ` +
-        `Assigned to: ${repList}.`;
+        `Resolving by ${usingHQ ? `owner HQ "${ownerHQ}"` : `property market "${market}"`} ` +
+        `(${stateResult.stateCode}). Assigned to: ${repList}.`;
+
+      if (!usingHQ && market) {
+        result.warnings.push(
+          `Owner HQ not provided — using property market "${market}" for regional assignment. ` +
+          `Pass --hq if the owner is headquartered in a different state.`
+        );
+      }
+
+      if (usingHQ && market) {
+        const propCode = stateCodeOf(market);
+        if (propCode !== stateResult.stateCode) {
+          result.warnings.push(
+            `Property is in ${propCode} but owner is HQ'd in ${stateResult.stateCode}. ` +
+            `Per policy, ownership resolves to the HQ state rep — not the property's regional rep.`
+          );
+        }
+      }
 
       if (stateResult.fallback) {
         result.warnings.push(
-          `Market "${market}" did not match any sub-market focus area within ${stateResult.stateCode}. ` +
+          `"${lookupStr}" did not match any sub-market focus within ${stateResult.stateCode}. ` +
           `Returning all ${stateResult.stateCode} reps — coordinate to assign a primary.`
         );
       } else if (stateResult.reps.length > 1) {
         result.warnings.push(
-          `Multiple reps cover this market (${stateResult.reps.join(', ')}). ` +
+          `Multiple reps cover this state (${stateResult.reps.join(', ')}). ` +
           `Coordinate coverage or assign a primary.`
         );
       }
@@ -360,6 +431,7 @@ function finalize(result) {
     rule: result.rule,
     ownerQuery: result.input.ownerName,
     matchedOwner: result.matchedOwner,
+    ownerHQ: result.input.ownerHQ || null,
     market: result.input.market || null,
     isLeaseUp: result.input.isLeaseUp || false,
     rep: Array.isArray(result.rep) ? result.rep.join(', ') : result.rep,

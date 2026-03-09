@@ -9,7 +9,8 @@
  *   npm run check -- <owner> [options]
  *
  * Options:
- *   --market <market>     e.g. "Dallas TX"
+ *   --market <market>     Property location, e.g. "Dallas TX" (used for Xavier MSA check)
+ *   --hq <location>       Owner HQ state, e.g. "VA", "Virginia", "McLean VA"
  *   --lease-up            Flag property as lease-up
  *   --class <class>       e.g. "Class A", "Class B"
  *   --type <type>         e.g. "Conventional MF", "Affordable"
@@ -19,6 +20,7 @@
  *   node src/cli.js check "MAA" --market "Dallas TX"
  *   node src/cli.js check "Unknown Owner" --market "Charlotte NC" --lease-up
  *   node src/cli.js check "Greystar" --market "Miami FL"
+ *   node src/cli.js check "Some Owner" --hq "Virginia" --market "Miami FL"
  *   node src/cli.js check "Some Owner" --class "Class C"
  */
 
@@ -33,6 +35,7 @@ function parseArgs(args) {
   const input = {
     ownerName: null,
     market: null,
+    ownerHQ: null,
     isLeaseUp: false,
     propertyClass: null,
     propertyType: null
@@ -44,6 +47,8 @@ function parseArgs(args) {
     const arg = args[i];
     if (arg === '--market' && args[i + 1]) {
       input.market = args[++i];
+    } else if (arg === '--hq' && args[i + 1]) {
+      input.ownerHQ = args[++i];
     } else if (arg === '--lease-up' || arg === '--leaseup') {
       input.isLeaseUp = true;
     } else if (arg === '--class' && args[i + 1]) {
@@ -70,7 +75,7 @@ const RULE_LABELS = {
   TOP_50:           'TOP 50 OWNER',
   LEASE_UP:         'LEASE-UP (non-Top-50)',
   OWNER_ASSIGNMENT: 'OWNER-LEVEL ASSIGNMENT',
-  MARKET_FALLBACK:  'MARKET/REGION FALLBACK',
+  STATE_FALLBACK:   'STATE/REGIONAL FALLBACK',
   UNASSIGNED:       'UNASSIGNED'
 };
 
@@ -78,7 +83,7 @@ const RULE_COLORS = {
   TOP_50:           '\x1b[32m',  // green
   LEASE_UP:         '\x1b[36m',  // cyan
   OWNER_ASSIGNMENT: '\x1b[34m',  // blue
-  MARKET_FALLBACK:  '\x1b[33m',  // yellow
+  STATE_FALLBACK:   '\x1b[33m',  // yellow
   UNASSIGNED:       '\x1b[31m'   // red
 };
 
@@ -102,7 +107,8 @@ function printResult(result) {
   console.log(BOLD + line('═') + RESET);
 
   console.log(` Owner query : ${BOLD}${result.input.ownerName}${RESET}`);
-  if (result.input.market)    console.log(` Market      : ${result.input.market}`);
+  if (result.input.ownerHQ)   console.log(` Owner HQ    : ${result.input.ownerHQ}`);
+  if (result.input.market)    console.log(` Property    : ${result.input.market}`);
   if (result.input.isLeaseUp) console.log(` Lease-up    : Yes`);
   if (result.matchedOwner)    console.log(` Matched     : ${DIM}${result.matchedOwner}${RESET}`);
   console.log(` Timestamp   : ${DIM}${result.timestamp}${RESET}`);
@@ -151,22 +157,24 @@ ${BOLD}Usage:${RESET}
   npm run check -- <owner> [options]
 
 ${BOLD}Options:${RESET}
-  --market <market>   Market name, e.g. "Dallas TX", "Charlotte NC"
+  --market <market>   Property location, e.g. "Dallas TX" (used for Xavier MSA check)
+  --hq <location>     Owner HQ state, e.g. "VA", "Virginia", "McLean VA"
   --lease-up          Flag the property as a lease-up
   --class <class>     Property class, e.g. "Class A", "Class B"
   --type <type>       Property type, e.g. "Conventional MF", "Affordable"
 
 ${BOLD}Resolution hierarchy:${RESET}
-  1. Top 50 owner          → Jack Thomasson (always)
-  2. Lease-up, non-Top-50  → Xavier
-  3. Owner-level assignment → assigned rep (beats market)
-  4. Market/region fallback → market rep(s)
+  1. Top 50 owner              → Jack Harvey (always, regardless of market)
+  2. Lease-up (3 conditions)   → Xavier (not Top 50, no owner relationship, Top 20 MSA)
+  3. Owner-level assignment    → that rep, nationwide including referrals
+  4. State/regional fallback   → rep for owner's HQ state (--hq), or property market if HQ unknown
 
 ${BOLD}Examples:${RESET}
   node src/cli.js check "Camden"
   node src/cli.js check "MAA" --market "Dallas TX"
   node src/cli.js check "Greystar" --market "Houston TX"
   node src/cli.js check "Unknown Owner" --market "Charlotte NC" --lease-up
+  node src/cli.js check "Some Owner" --hq "Virginia" --market "Miami FL"
   node src/cli.js check "Some Owner" --market "Miami FL" --class "Class A"
 `);
 }
