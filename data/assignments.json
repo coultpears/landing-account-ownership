@@ -1,0 +1,78 @@
+{
+  "ownerAssignments": [
+    {
+      "owner": "Greystar",
+      "aliases": ["Greystar Real Estate Partners"],
+      "rep": "Jack Thomasson",
+      "assignedAt": "2026-01-01T00:00:00Z",
+      "notes": "Existing partner"
+    },
+    {
+      "owner": "Morgan Properties",
+      "aliases": [],
+      "rep": "Jack Thomasson",
+      "assignedAt": "2026-01-01T00:00:00Z",
+      "notes": "Existing partner"
+    },
+    {
+      "owner": "Cortland",
+      "aliases": ["Cortland Partners"],
+      "rep": "Jack Thomasson",
+      "assignedAt": "2026-01-01T00:00:00Z",
+      "notes": "Existing partner"
+    },
+    {
+      "owner": "Case & Associates",
+      "aliases": ["Case and Associates", "Case Associates"],
+      "rep": "Jack Thomasson",
+      "assignedAt": "2026-01-01T00:00:00Z",
+      "notes": "Existing partner"
+    },
+    {
+      "owner": "RPM",
+      "aliases": ["RPM Living"],
+      "rep": "Jack Thomasson",
+      "assignedAt": "2026-01-01T00:00:00Z",
+      "notes": "Existing partner"
+    },
+    {
+      "owner": "American Landmark",
+      "aliases": ["American Landmark Apartments"],
+      "rep": "Jack Thomasson",
+      "assignedAt": "2026-01-01T00:00:00Z",
+      "notes": "Existing partner"
+    }
+  ],
+  "marketAssignments": [
+    {
+      "market": "Miami FL",
+      "reps": ["Ashtyn", "Renato"],
+      "assignedAt": "2026-01-01T00:00:00Z"
+    },
+    {
+      "market": "Fort Lauderdale FL",
+      "reps": ["Ashtyn", "Renato"],
+      "assignedAt": "2026-01-01T00:00:00Z"
+    },
+    {
+      "market": "Dallas TX",
+      "reps": ["John", "Wells"],
+      "assignedAt": "2026-01-01T00:00:00Z"
+    },
+    {
+      "market": "Houston TX",
+      "reps": ["John", "Wells"],
+      "assignedAt": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "regionAssignments": [
+    {
+      "region": "Eastern Seaboard",
+      "reps": ["G"],
+      "states": ["VA", "NC", "SC", "GA", "FL"],
+      "excludedMarkets": ["Miami FL", "Fort Lauderdale FL"],
+      "assignedAt": "2026-01-01T00:00:00Z",
+      "notes": "Default for VA, NC, SC, GA, and FL markets not already directly assigned"
+    }
+  ]
+}

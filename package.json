@@ -1,0 +1,14 @@
+{
+  "name": "landing-account-ownership",
+  "version": "1.0.0",
+  "description": "Phase 1 ownership conflict resolution engine for Class A/B Conventional MF account coverage",
+  "main": "src/cli.js",
+  "scripts": {
+    "check": "node src/cli.js check"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "author": "coultpears",
+  "license": "UNLICENSED"
+}
