@@ -9,7 +9,7 @@
  *   npm run check -- <owner> [options]
  *
  * Options:
- *   --market <market>     Property location, e.g. "Dallas TX" (used for Xavier MSA check)
+ *   --market <market>     Property location, e.g. "Dallas TX" (used for Xander Williams MSA check)
  *   --hq <location>       Owner HQ state, e.g. "VA", "Virginia", "McLean VA"
  *   --lease-up            Flag property as lease-up
  *   --class <class>       e.g. "Class A", "Class B"
@@ -203,7 +203,7 @@ ${BOLD}Usage:${RESET}
   npm run check -- <owner> [options]
 
 ${BOLD}Options:${RESET}
-  --market <market>   Property location, e.g. "Dallas TX" (used for Xavier MSA check)
+  --market <market>   Property location, e.g. "Dallas TX" (used for Xander Williams MSA check)
   --hq <location>     Owner HQ state, e.g. "VA", "Virginia", "McLean VA"
   --lease-up          Flag the property as a lease-up
   --class <class>     Property class, e.g. "Class A", "Class B"
@@ -211,7 +211,7 @@ ${BOLD}Options:${RESET}
 
 ${BOLD}Resolution hierarchy:${RESET}
   1. Top 50 owner              → Jack Harvey (always, regardless of market)
-  2. Lease-up (3 conditions)   → Xavier (not Top 50, no owner relationship, Top 20 MSA)
+  2. Lease-up (3 conditions)   → Xander Williams (not Top 50, no owner relationship, Top 20 MSA)
   3. Owner-level assignment    → that rep, nationwide including referrals
   4. State/regional fallback   → rep for owner's HQ state (--hq), or property market if HQ unknown
 
@@ -256,7 +256,7 @@ function prompt(question) {
 
 const RULE_LABELS_AUDIT = {
   TOP_50:           'Top 50 Owner  → Jack Harvey',
-  LEASE_UP:         'Lease-Up      → Xavier',
+  LEASE_UP:         'Lease-Up      → Xander Williams',
   OWNER_ASSIGNMENT: 'Owner Assignment',
   STATE_FALLBACK:   'State/Regional Fallback',
   UNASSIGNED:       'Unassigned'

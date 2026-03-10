@@ -278,7 +278,7 @@ function logCheck(entry) {
  * Resolution hierarchy:
  *   0. Known non-Top-50 owner (disambiguation guard)   → skip Tier 1, fall through
  *   1. Top 50 owner                                    → Jack Harvey
- *   2. Lease-up + NOT Top 50 + no owner relationship   → Xavier
+ *   2. Lease-up + NOT Top 50 + no owner relationship   → Xander Williams
  *   3. Owner-level assignment (beats market/state)     → assigned rep
  *      — covers ALL properties nationwide incl. referrals
  *   4. State-based regional fallback                   → state rep(s)
@@ -338,8 +338,8 @@ function resolve(input) {
   }));
   const ownerHit = fuzzyMatch(ownerName, ownerCandidates);
 
-  // ── Tier 2: Xavier lease-up hunting ──────────────────────────────────────
-  // Xavier gets a lease-up property only when ALL three conditions are met:
+  // ── Tier 2: Xander Williams lease-up hunting ──────────────────────────────────────
+  // Xander Williams gets a lease-up property only when ALL three conditions are met:
   //   a) Owner is NOT in the Top 50         (passed Tier 1)
   //   b) No rep already owns this owner relationship
   //   c) Property is in a Top 20 MSA
@@ -347,17 +347,17 @@ function resolve(input) {
   // or the regional rep instead.
   if (isLeaseUp) {
     if (ownerHit) {
-      // Condition (b) fails: a rep owns this relationship — skip Xavier entirely,
+      // Condition (b) fails: a rep owns this relationship — skip Xander Williams entirely,
       // Tier 3 will assign to that rep.
     } else {
       const msa = getTop20MSA(market, markets);
       if (msa) {
-        result.rep = 'Xavier';
+        result.rep = 'Xander Williams';
         result.rule = 'LEASE_UP';
         result.explanation =
           `Lease-up property in "${market}" (${msa.name} MSA). ` +
           `Owner "${ownerName}" is not Top 50 and has no existing rep relationship. ` +
-          `All three Xavier conditions met — routes to Xavier.`;
+          `All three Xander Williams conditions met — routes to Xander Williams.`;
         finalize(result);
         return result;
       } else {
@@ -366,7 +366,7 @@ function resolve(input) {
           ? `"${market}" is not in a Top 20 MSA`
           : `no market provided, cannot confirm Top 20 MSA`;
         result.warnings.push(
-          `Lease-up flagged but ${msaNote}. Xavier is restricted to Top 20 MSAs. ` +
+          `Lease-up flagged but ${msaNote}. Xander Williams is restricted to Top 20 MSAs. ` +
           `Routing to regional rep instead.`
         );
       }

@@ -42,7 +42,7 @@ Tiers are evaluated in order. **The first match wins.**
 | Tier | Rule | Assigned To |
 |------|------|-------------|
 | 1 | Owner is in the **Top 50** list | Jack Harvey |
-| 2 | Property is a **lease-up** AND all three Xavier conditions are met (see below) | Xavier |
+| 2 | Property is a **lease-up** AND all three Xander Williams conditions are met (see below) | Xander Williams |
 | 3 | Owner has an **owner-level assignment** (explicit partner relationship) | That rep |
 | 4 | **State-based regional fallback** based on property market | Regional rep(s) |
 | — | No match found | UNASSIGNED |
@@ -50,13 +50,13 @@ Tiers are evaluated in order. **The first match wins.**
 ### Key rules
 - **Tier 1 always wins.** Top 50 owners go to Jack Harvey regardless of market, lease-up status, or any other factor.
 - **Tier 3 beats Tier 4.** Owner-level assignments cover **all properties for that owner nationwide**, including referrals, regardless of what state or market the property is in.
-- **Xavier operates at the property level**, not the owner level. He hunts individual lease-up properties — not owner relationships.
+- **Xander Williams operates at the property level**, not the owner level. He hunts individual lease-up properties — not owner relationships.
 
 ---
 
-## Xavier Lease-Up Rules (Tier 2)
+## Xander Williams Lease-Up Rules (Tier 2)
 
-Xavier gets a lease-up property only when **all three conditions are met**:
+Xander Williams gets a lease-up property only when **all three conditions are met**:
 
 1. The owner is **not** in the Top 50
 2. **No rep already owns** the owner relationship (not in `ownerAssignments`)
@@ -133,7 +133,7 @@ Two sections:
 - `stateAssignments` — array of `{ rep, states[], subMarkets[], focus }` entries
 
 ### `data/markets.json`
-Top 20 MSA definitions. Each entry has `id`, `name`, `states[]`, and `keywords[]`. Used exclusively for Xavier's Tier 2 eligibility check.
+Top 20 MSA definitions. Each entry has `id`, `name`, `states[]`, and `keywords[]`. Used exclusively for Xander Williams's Tier 2 eligibility check.
 
 ### `data/log.json`
 Append-only. Every `resolve()` call writes: timestamp, rule triggered, owner query, matched owner, market, lease-up flag, assigned rep, conflict flag, warnings. The `fix` command also appends entries with `rule: "FIX"` containing before/after field values and source note.
@@ -170,7 +170,7 @@ The CLI automatically fills in missing context before running resolution. Enrich
 
 ### What gets discovered and used
 - **Owner name** — replaces the property name query for resolution
-- **Market** — enables Xavier MSA check and state fallback
+- **Market** — enables Xander Williams MSA check and state fallback
 - **Owner HQ** — drives Tier 4 regional assignment (owner's state, not property state)
 - **Property class** — passed to the qualification gate if the user didn't supply `--class`; "luxury" maps to Class A; affordable/LIHTC signals to disqualify
 
@@ -207,10 +207,10 @@ node src/cli.js check "Camden"
 # With market (enables state fallback)
 node src/cli.js check "MAA" --market "Dallas TX"
 
-# Lease-up (triggers Xavier eligibility check)
+# Lease-up (triggers Xander Williams eligibility check)
 node src/cli.js check "Unknown Owner" --market "Houston TX" --lease-up
 
-# Lease-up outside Top 20 MSA (Xavier blocked, routes to regional rep)
+# Lease-up outside Top 20 MSA (Xander Williams blocked, routes to regional rep)
 node src/cli.js check "Unknown Owner" --market "Bozeman MT" --lease-up
 
 # Owner-level assignment overrides market
@@ -260,8 +260,8 @@ Append to `ownerAssignments` in `data/assignments.json` with `owner`, `aliases`,
 ### Add or update a state assignment
 Edit `stateAssignments` in `data/assignments.json`. Add `subMarkets[]` to restrict a rep to specific cities within a state.
 
-### Update Xavier's rep name
-In `src/engine.js`, change the string `'Xavier'` in the Tier 2 block.
+### Update Xander Williams's rep name
+In `src/engine.js`, change the string `'Xander Williams'` in the Tier 2 block.
 
 ### Add a Top 20 MSA
 Append to `top20MSAs` in `data/markets.json` with `id`, `name`, `states[]`, and `keywords[]`. Use specific city/neighborhood names as keywords — avoid short abbreviations that could match inside other words.

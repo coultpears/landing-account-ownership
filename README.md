@@ -11,7 +11,7 @@ Four tiers are evaluated in order. First match wins.
 | Priority | Rule | Goes to |
 |----------|------|---------|
 | 1 | Owner is in the **Top 50** list | Jack Harvey |
-| 2 | Property is a **lease-up** AND owner is not Top 50, no rep owns the relationship, and property is in a **Top 20 MSA** | Xavier |
+| 2 | Property is a **lease-up** AND owner is not Top 50, no rep owns the relationship, and property is in a **Top 20 MSA** | Xander Williams |
 | 3 | Owner has an **existing rep relationship** (signed partner) | That rep — covers all their properties nationwide |
 | 4 | No match above — falls back to the **rep covering the owner's HQ state** | Regional rep |
 
@@ -37,7 +37,7 @@ npm run check -- "<owner name>" [options]
 # Top 50 owner — always Jack Harvey, market doesn't matter
 node src/cli.js check "Camden Property Trust" --market "Dallas TX"
 
-# Lease-up in a Top 20 MSA with no existing relationship — Xavier
+# Lease-up in a Top 20 MSA with no existing relationship — Xander Williams
 node src/cli.js check "Sunrise Apartments LLC" --market "Miami FL" --lease-up
 
 # Owner HQ'd in Virginia with a property in Miami — Ghislain Cossio (VA)
@@ -46,7 +46,7 @@ node src/cli.js check "Pinnacle Property Group" --hq "Virginia" --market "Miami 
 # Existing partner — owner-level assignment wins regardless of market
 node src/cli.js check "Cortland" --market "Atlanta GA"
 
-# Lease-up outside Top 20 MSA — Xavier blocked, goes to regional rep
+# Lease-up outside Top 20 MSA — Xander Williams blocked, goes to regional rep
 node src/cli.js check "Small Owner LLC" --market "Bozeman MT" --lease-up
 ```
 
@@ -55,8 +55,8 @@ node src/cli.js check "Small Owner LLC" --market "Bozeman MT" --lease-up
 | Flag | What it does |
 |------|-------------|
 | `--hq <location>` | Owner's HQ state. Accepts `"VA"`, `"Virginia"`, or `"McLean VA"`. Used for Tier 4 regional assignment. |
-| `--market <city state>` | Property location, e.g. `"Miami FL"`. Required for Xavier's Top 20 MSA check. |
-| `--lease-up` | Flags the property as a lease-up. Triggers Xavier eligibility check. |
+| `--market <city state>` | Property location, e.g. `"Miami FL"`. Required for Xander Williams's Top 20 MSA check. |
+| `--lease-up` | Flags the property as a lease-up. Triggers Xander Williams eligibility check. |
 | `--class <class>` | Property class (`"Class A"`, `"Class B"`). Disqualifies Class C and below. |
 | `--type <type>` | Property type. Disqualifies affordable, LIHTC, senior, student housing, etc. |
 
@@ -109,7 +109,7 @@ Every check is logged automatically to `data/log.json`.
 | Raegan Harris | AL, MS, LA, AR, CA, NM, AZ, NV |
 | Ghislain Cossio | VA, DC, MD, PA, NJ, NY, CT, MA |
 | Nolan Moran | OK, KS, NE, ID, MO, WY, MT, IA, OR, WA, UT, CO, MN |
-| Xavier | Lease-up hunting — Top 20 MSAs only |
+| Xander Williams | Lease-up hunting — Top 20 MSAs only |
 
 ---
 

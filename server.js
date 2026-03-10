@@ -66,6 +66,7 @@ const {
 // ---------------------------------------------------------------------------
 
 let app;
+let httpReceiver = null; // set in HTTP mode; used to register /health
 
 if (process.env.SLACK_APP_TOKEN) {
   // ── Socket Mode ────────────────────────────────────────────────────────────
@@ -77,14 +78,14 @@ if (process.env.SLACK_APP_TOKEN) {
   });
 } else {
   // ── HTTP Mode ──────────────────────────────────────────────────────────────
-  const receiver = new ExpressReceiver({
+  httpReceiver = new ExpressReceiver({
     signingSecret: process.env.SLACK_SIGNING_SECRET
   });
 
   // Drop Slack retry requests immediately — return 200 and ignore.
   // Without this, slow handlers (audit, HubSpot enrichment) trigger a retry
   // storm: Slack retries → queued requests → apparent 429s → dead bot.
-  receiver.app.use((req, res, next) => {
+  httpReceiver.app.use((req, res, next) => {
     if (req.headers['x-slack-retry-num']) {
       res.sendStatus(200);
       return;
@@ -92,9 +93,12 @@ if (process.env.SLACK_APP_TOKEN) {
     next();
   });
 
+  // Health check — used by Cloud Run readiness probes and manual verification
+  httpReceiver.app.get('/health', (_req, res) => res.status(200).json({ ok: true }));
+
   app = new App({
     token:    process.env.SLACK_BOT_TOKEN,
-    receiver
+    receiver: httpReceiver
   });
 }
 
@@ -182,7 +186,7 @@ function makeFixKey() {
 
 const RULE_LABELS = {
   TOP_50:           'Top 50 Owner → Jack Harvey',
-  LEASE_UP:         'Lease-Up → Xavier',
+  LEASE_UP:         'Lease-Up → Xander Williams',
   OWNER_ASSIGNMENT: 'Owner-Level Assignment',
   STATE_FALLBACK:   'State/Regional Fallback',
   UNASSIGNED:       'Unassigned'

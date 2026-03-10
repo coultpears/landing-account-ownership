@@ -31,7 +31,7 @@ const { resolve } = require('./engine');
 // All reps tracked by the resolution engine
 const KNOWN_REPS = [
   'Jack Harvey',
-  'Xavier',
+  'Xander Williams',
   'Jack Thomasson',
   'Wells Davis',
   'John LaVanway',
