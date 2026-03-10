@@ -186,6 +186,7 @@ gcloud run deploy landing-ownership-bot \
   --allow-unauthenticated \
   --min-instances 1 \
   --timeout 300 \
+  --no-cpu-throttling \
   --set-env-vars "HUBSPOT_TOKEN=pat-na1-...,HUBSPOT_PORTAL_ID=20754835,SLACK_BOT_TOKEN=xoxb-...,SLACK_SIGNING_SECRET=..."
 ```
 
@@ -215,7 +216,8 @@ gcloud builds submit --tag $IMAGE && \
 gcloud run deploy landing-ownership-bot \
   --image $IMAGE \
   --platform managed \
-  --region $REGION
+  --region $REGION \
+  --no-cpu-throttling
 ```
 
 > **Note:** `data/cache.json` and `data/log.json` are written inside the container and reset on each new deployment. For persistent logs, mount a Cloud Storage bucket or push log entries to a database.

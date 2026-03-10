@@ -32,7 +32,7 @@ const path = require('path');
   } catch { /* no .env — rely on environment */ }
 })();
 
-const { App } = require('@slack/bolt');
+const { App, ExpressReceiver } = require('@slack/bolt');
 
 const { resolve }                                    = require('./src/engine');
 const { qualify }                                    = require('./src/qualify');
@@ -54,16 +54,49 @@ const {
 
 // ---------------------------------------------------------------------------
 // Slack App
+// Socket Mode (local dev):  SLACK_APP_TOKEN set  → persistent WebSocket
+// HTTP Mode   (Cloud Run):  SLACK_APP_TOKEN absent → ExpressReceiver on PORT
+//
+// HTTP mode uses a custom ExpressReceiver so we can drop Slack's retry
+// requests immediately. Slack retries a slash command if it doesn't get a
+// response within ~3 seconds, even after ack() sends the HTTP 200 — because
+// on Cloud Run the CPU is throttled once the 200 is sent, which stalls the
+// async work and makes Slack think the request timed out. Dropping retries
+// at the HTTP layer prevents the resulting retry storm.
 // ---------------------------------------------------------------------------
 
-const app = new App({
-  token:         process.env.SLACK_BOT_TOKEN,
-  signingSecret: process.env.SLACK_SIGNING_SECRET,
-  ...(process.env.SLACK_APP_TOKEN
-    ? { socketMode: true, appToken: process.env.SLACK_APP_TOKEN }
-    : {}
-  )
-});
+let app;
+
+if (process.env.SLACK_APP_TOKEN) {
+  // ── Socket Mode ────────────────────────────────────────────────────────────
+  app = new App({
+    token:         process.env.SLACK_BOT_TOKEN,
+    signingSecret: process.env.SLACK_SIGNING_SECRET,
+    socketMode:    true,
+    appToken:      process.env.SLACK_APP_TOKEN
+  });
+} else {
+  // ── HTTP Mode ──────────────────────────────────────────────────────────────
+  const receiver = new ExpressReceiver({
+    signingSecret: process.env.SLACK_SIGNING_SECRET
+  });
+
+  // Drop Slack retry requests immediately — return 200 and ignore.
+  // Without this, slow handlers (audit, HubSpot enrichment) trigger a retry
+  // storm: Slack retries → queued requests → apparent 429s → dead bot.
+  receiver.app.use((req, res, next) => {
+    if (req.headers['x-slack-retry-num']) {
+      res.sendStatus(200);
+      return;
+    }
+    next();
+  });
+
+  app = new App({
+    token:    process.env.SLACK_BOT_TOKEN,
+    receiver
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Slack user → rep mapping
@@ -908,7 +941,9 @@ app.action('fix_decline', async ({ body, ack, respond }) => {
   const ruleValue = `EXCEPTION — ${rule} declined by ${body.user?.name || 'user'} on ${today}`;
 
   try {
-    await updateCompany(companyId, { landing_ownership_rule: ruleValue });
+    let ruleWritten = true;
+    try { await ensureOwnershipRuleProperty(); } catch { ruleWritten = false; }
+    if (ruleWritten) await updateCompany(companyId, { landing_ownership_rule: ruleValue });
 
     appendLog({
       timestamp: new Date().toISOString(),
@@ -944,6 +979,13 @@ app.action('fix_decline', async ({ body, ack, respond }) => {
 // ---------------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------------
+
+// Prevent unhandled promise rejections from crashing the process.
+// Bolt's action/command handlers are all wrapped in try/catch, but Belt itself
+// may surface unexpected rejections (e.g. network blips in respond()).
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
 
 (async () => {
   try { await ensureOwnershipRuleProperty(); } catch { /* non-fatal */ }

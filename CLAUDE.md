@@ -474,6 +474,7 @@ gcloud run deploy landing-ownership-bot \
   --allow-unauthenticated \
   --min-instances 1 \
   --timeout 300 \
+  --no-cpu-throttling \
   --set-env-vars "HUBSPOT_TOKEN=…,HUBSPOT_PORTAL_ID=…,SLACK_BOT_TOKEN=xoxb-…,SLACK_SIGNING_SECRET=…"
 
 # Get the public URL
