@@ -250,10 +250,62 @@ Append to `top20MSAs` in `data/markets.json` with `id`, `name`, `states[]`, and 
 
 ---
 
-## Phase 2 Ideas
+---
+
+## Phase 2A — HubSpot Conflict Detection
+
+### Setup
+
+1. Copy `.env.example` to `.env` and fill in `HUBSPOT_TOKEN` with a private app token.
+2. In HubSpot: **Settings → Integrations → Private Apps → Create private app.**
+3. Required scopes: `crm.objects.companies.read`, `crm.objects.deals.read`, `crm.objects.contacts.read`, `sales-email-read`, `crm.objects.owners.read`, `crm.schemas.companies.read`, `crm.associations.read`
+4. Optionally set `HUBSPOT_PORTAL_ID` to skip one API call on startup.
+
+### Commands
+
+```bash
+# Audit one rep — finds all companies they've touched, flags conflicts
+node src/cli.js audit "Scout Bishop"
+node src/cli.js audit "Wells Davis" --days 30
+
+# Full team audit — runs every rep, produces a combined conflict report
+node src/cli.js audit-all
+node src/cli.js audit-all --days 60
+
+# Via npm scripts
+npm run audit -- "Scout Bishop"
+npm run audit-all
+```
+
+### `--days` flag
+Sets the lookback window for HubSpot activity (calls, emails, meetings, tasks, deals). Default: 90 days.
+
+### How conflict detection works
+
+1. For the given rep, the engine searches HubSpot for every deal they own and every engagement (call, email, meeting, task) they've logged in the lookback window.
+2. Each engagement/deal is mapped to its associated company record(s) via HubSpot's v4 batch associations API.
+3. Every unique company is run through `engine.resolve()` using the company name and city/state as the market string.
+4. **Conflict** = the engine assigns the account to someone other than the audited rep (and the result is not UNASSIGNED).
+5. Output shows: company name, HubSpot link, who's working it, who should own it, which resolution rule triggered, and how many activities the wrong rep has logged.
+
+`audit-all` runs all 13 reps sequentially (to stay within HubSpot rate limits), pre-fetches owners and portal ID once, and outputs a combined report grouped by rep.
+
+### New source files
+
+| File | Purpose |
+|------|---------|
+| `src/hubspot.js` | HubSpot API wrapper (owners, deals, engagements, associations, companies) |
+| `src/audit.js` | Audit logic — ties HubSpot data to the ownership engine |
+
+### Company-to-market mapping
+The audit uses `city` + `state` from the HubSpot company record as the market string passed to `resolve()`. If either field is blank in HubSpot, the market string is partial or missing, which may affect Tier 4 state fallback accuracy. Keep HubSpot company records up to date with city/state for best results.
+
+---
+
+## Phase 2 Ideas (remaining)
 
 - REST API wrapper around `engine.js`
-- CRM/Salesforce integration (push resolution results to lead records)
-- Conflict escalation workflow (flag for manager review)
+- Push resolution results back to HubSpot company records (custom property)
+- Conflict escalation workflow (flag for manager review, Slack notification)
 - Confidence threshold tuning per rule tier
 - Web UI for checking ownership without CLI

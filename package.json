@@ -4,7 +4,9 @@
   "description": "Phase 1 ownership conflict resolution engine for Class A/B Conventional MF account coverage",
   "main": "src/cli.js",
   "scripts": {
-    "check": "node src/cli.js check"
+    "check":     "node src/cli.js check",
+    "audit":     "node src/cli.js audit",
+    "audit-all": "node src/cli.js audit-all"
   },
   "engines": {
     "node": ">=16"

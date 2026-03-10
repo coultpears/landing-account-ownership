@@ -30,6 +30,7 @@ const path = require('path');
 const { resolve } = require('./engine');
 const { qualify } = require('./qualify');
 const { enrichFromPropertyName, enrichOwnerHQ, looksLikePropertyName } = require('./search');
+const { auditRep, KNOWN_REPS } = require('./audit');
 
 // ---------------------------------------------------------------------------
 // Enrichment cache  (data/cache.json)
@@ -202,6 +203,113 @@ ${BOLD}Examples:${RESET}
 }
 
 // ---------------------------------------------------------------------------
+// Audit output formatting
+// ---------------------------------------------------------------------------
+
+const RULE_LABELS_AUDIT = {
+  TOP_50:           'Top 50 Owner  → Jack Harvey',
+  LEASE_UP:         'Lease-Up      → Xavier',
+  OWNER_ASSIGNMENT: 'Owner Assignment',
+  STATE_FALLBACK:   'State/Regional Fallback',
+  UNASSIGNED:       'Unassigned'
+};
+
+function printConflictBlock(c, index, total) {
+  const idx = index !== undefined ? ` ${index + 1} of ${total}` : '';
+  console.log(BOLD + `  CONFLICT${idx}` + RESET);
+  console.log(line('─'));
+  console.log(` Company     : ${BOLD}${c.companyName}${RESET}`);
+  console.log(` HubSpot     : ${DIM}${c.link}${RESET}`);
+  console.log(` Market      : ${c.market}`);
+  console.log(` Working it  : \x1b[31m${c.workingRep}${RESET}  (${c.activities} activit${c.activities !== 1 ? 'ies' : 'y'})`);
+  console.log(` Should be   : \x1b[32m${BOLD}${c.expectedRep}${RESET}`);
+  console.log(` Rule        : ${DIM}${RULE_LABELS_AUDIT[c.rule] || c.rule}${RESET}`);
+}
+
+function printAuditReport(result) {
+  const { rep, hubspotOwner, daysBack, companies, conflicts, error } = result;
+
+  console.log('');
+  console.log(BOLD + line('═') + RESET);
+  console.log(BOLD + ` AUDIT — ${rep}   ${DIM}│  last ${daysBack} days${RESET}`);
+  console.log(BOLD + line('═') + RESET);
+
+  if (error) {
+    console.log(` \x1b[31m${error}${RESET}`);
+    console.log(BOLD + line('═') + RESET);
+    console.log('');
+    return;
+  }
+
+  const ownerEmail = hubspotOwner?.email ? `  (${hubspotOwner.email})` : '';
+  console.log(` HubSpot owner : ${hubspotOwner.firstName} ${hubspotOwner.lastName}${ownerEmail}`);
+  console.log(` Companies hit : ${BOLD}${companies.length}${RESET}   ${DIM}│${RESET}   Conflicts: ${conflicts.length > 0 ? `\x1b[31m${BOLD}${conflicts.length}${RESET}` : `\x1b[32m${BOLD}0${RESET}`}`);
+
+  if (conflicts.length === 0) {
+    console.log('');
+    console.log(` \x1b[32m✓  No conflicts — ${rep} is correctly assigned on all active accounts.\x1b[0m`);
+  } else {
+    console.log(line('─'));
+    conflicts.forEach((c, i) => {
+      printConflictBlock(c, i, conflicts.length);
+      if (i < conflicts.length - 1) console.log(line('─'));
+    });
+  }
+
+  console.log(BOLD + line('═') + RESET);
+  console.log('');
+}
+
+function printAuditSummary(results) {
+  const totalCompanies = results.reduce((n, r) => n + (r.companies?.length || 0), 0);
+  const totalConflicts = results.reduce((n, r) => n + (r.conflicts?.length || 0), 0);
+  const daysBack       = results[0]?.daysBack || 90;
+
+  console.log('');
+  console.log(BOLD + line('═') + RESET);
+  console.log(BOLD + ' FULL TEAM AUDIT' + RESET + `   ${DIM}│  last ${daysBack} days${RESET}`);
+  console.log(BOLD + line('═') + RESET);
+  console.log(` Reps audited    : ${BOLD}${results.length}${RESET}`);
+  console.log(` Companies found : ${BOLD}${totalCompanies}${RESET}   ${DIM}│${RESET}   Conflicts: ${totalConflicts > 0 ? `\x1b[31m${BOLD}${totalConflicts}${RESET}` : `\x1b[32m${BOLD}0${RESET}`}`);
+  console.log(line('─'));
+
+  // Per-rep summary
+  console.log(BOLD + ' BY REP:' + RESET);
+  for (const r of results) {
+    if (r.error) {
+      console.log(`   ${DIM}${r.rep.padEnd(22)} — not found in HubSpot${RESET}`);
+      continue;
+    }
+    const flag = r.conflicts.length > 0 ? `  \x1b[31m⚠  ${r.conflicts.length} conflict${r.conflicts.length !== 1 ? 's' : ''}\x1b[0m` : `  \x1b[32m✓\x1b[0m`;
+    console.log(`   ${r.rep.padEnd(22)} — ${String(r.companies.length).padStart(3)} companies${flag}`);
+  }
+
+  // Conflict detail grouped by rep
+  const withConflicts = results.filter(r => r.conflicts?.length > 0);
+  if (withConflicts.length > 0) {
+    console.log('');
+    console.log(BOLD + line('─') + RESET);
+    console.log(BOLD + ' CONFLICTS:' + RESET);
+
+    for (const r of withConflicts) {
+      console.log('');
+      console.log(BOLD + ` ${r.rep}` + RESET + DIM + ` (${r.conflicts.length} conflict${r.conflicts.length !== 1 ? 's' : ''})` + RESET);
+      console.log(line('─'));
+      r.conflicts.forEach((c, i) => {
+        printConflictBlock(c, i, r.conflicts.length);
+        if (i < r.conflicts.length - 1) console.log(line('─'));
+      });
+    }
+  } else {
+    console.log('');
+    console.log(` \x1b[32m✓  No conflicts found across the entire team.\x1b[0m`);
+  }
+
+  console.log(BOLD + line('═') + RESET);
+  console.log('');
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -319,6 +427,58 @@ const [,, command, ...rest] = process.argv;
 
     const result = resolve(input);
     printResult(result);
+
+  } else if (command === 'audit') {
+    // ── audit <rep name> [--days <n>] ─────────────────────────────────────
+    if (!rest.length) {
+      console.error('\x1b[31mError: Please provide a rep name, e.g. "audit Scout Bishop"\x1b[0m');
+      process.exit(1);
+    }
+
+    // Extract --days flag, rest is the rep name
+    let daysBack = 90;
+    const nameTokens = [];
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === '--days' && rest[i + 1]) { daysBack = parseInt(rest[++i], 10) || 90; }
+      else if (!rest[i].startsWith('--')) nameTokens.push(rest[i]);
+    }
+    const repName = nameTokens.join(' ').trim();
+
+    if (!repName) {
+      console.error('\x1b[31mError: Could not parse a rep name from arguments.\x1b[0m');
+      process.exit(1);
+    }
+
+    const progress = (msg) => process.stderr.write(`\x1b[2m${msg}\x1b[0m\n`);
+    progress(`\nAuditing ${repName}...`);
+
+    const result = await auditRep(repName, { daysBack, progress });
+    printAuditReport(result);
+
+  } else if (command === 'audit-all') {
+    // ── audit-all [--days <n>] ────────────────────────────────────────────
+    let daysBack = 90;
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === '--days' && rest[i + 1]) daysBack = parseInt(rest[++i], 10) || 90;
+    }
+
+    const progress = (msg) => process.stderr.write(`\x1b[2m${msg}\x1b[0m\n`);
+
+    // Pre-fetch shared data once
+    progress('\nFetching HubSpot owners and portal ID...');
+    const { getOwners, getPortalId } = require('./hubspot');
+    const [allOwners, portalId] = await Promise.all([getOwners(), getPortalId()]);
+    progress(`  ${allOwners.length} HubSpot owners found. Portal ID: ${portalId}\n`);
+
+    const results = [];
+    for (const rep of KNOWN_REPS) {
+      progress(`Auditing ${rep}...`);
+      const result = await auditRep(rep, { daysBack, allOwners, portalId, progress });
+      results.push(result);
+      progress('');
+    }
+
+    printAuditSummary(results);
 
   } else {
     printUsage();
