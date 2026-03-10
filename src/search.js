@@ -181,4 +181,49 @@ async function enrichOwnerHQ(ownerName) {
   }
 }
 
-module.exports = { enrichFromPropertyName, enrichOwnerHQ, looksLikePropertyName, extractPropertyClass };
+/**
+ * Try to extract a street address from free text.
+ * Returns e.g. "123 Main Street" or null. Best-effort — not always present.
+ */
+function extractStreetAddress(text) {
+  const m = text.match(
+    /\b(\d{1,5}\s+[A-Z][A-Za-z0-9\s]{2,30}(?:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Drive|Dr|Lane|Ln|Way|Court|Ct|Place|Pl)\.?)\b/
+  );
+  return m ? m[1].trim().replace(/\s+/g, ' ') : null;
+}
+
+/**
+ * Given a company name, search for its HQ city, state, and (optionally) street address.
+ * Returns { city, state, address } — null fields = not found.
+ *
+ * In Claude Code sessions, prefer using the built-in WebSearch tool for more
+ * reliable results before calling this function.
+ */
+async function enrichCompanyLocation(companyName) {
+  try {
+    const r    = await ddgSearch(`${companyName} company headquarters address location`);
+    const text = collapseText(r);
+    if (!text) return { city: null, state: null, address: null };
+
+    const location = extractLocation(text);
+    let city = null, state = null;
+    if (location) {
+      const parts = location.split(' ');
+      state = parts.pop();
+      city  = parts.join(' ');
+    }
+
+    const address = extractStreetAddress(text);
+    return { city, state, address };
+  } catch {
+    return { city: null, state: null, address: null };
+  }
+}
+
+module.exports = {
+  enrichFromPropertyName,
+  enrichOwnerHQ,
+  enrichCompanyLocation,
+  looksLikePropertyName,
+  extractPropertyClass
+};

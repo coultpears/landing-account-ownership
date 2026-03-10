@@ -242,11 +242,26 @@ async function getCompaniesBatch(companyIds) {
   return results;
 }
 
+// ---------------------------------------------------------------------------
+// Public: Single company read / write (used by fix command)
+// ---------------------------------------------------------------------------
+
+async function getCompany(companyId) {
+  const props = 'name,city,state,address,zip,country,domain,industry,hubspot_owner_id';
+  return apiRequest('GET', `/crm/v3/objects/companies/${companyId}?properties=${props}`);
+}
+
+async function updateCompany(companyId, properties) {
+  return apiRequest('PATCH', `/crm/v3/objects/companies/${companyId}`, { properties });
+}
+
 module.exports = {
   getOwners,
   getPortalId,
   getDealsByOwner,
   getEngagementsByOwner,
   getAssociatedCompanyIds,
-  getCompaniesBatch
+  getCompaniesBatch,
+  getCompany,
+  updateCompany
 };

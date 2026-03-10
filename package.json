@@ -6,7 +6,8 @@
   "scripts": {
     "check":     "node src/cli.js check",
     "audit":     "node src/cli.js audit",
-    "audit-all": "node src/cli.js audit-all"
+    "audit-all": "node src/cli.js audit-all",
+    "fix":       "node src/cli.js fix"
   },
   "engines": {
     "node": ">=16"

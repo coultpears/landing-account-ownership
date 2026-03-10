@@ -1,0 +1,76 @@
+{
+  "_comment": "Edit excludedCompanies / excludedDomains to suppress non-prospect records from conflict reports. Names are matched case-insensitively. Partial matches work (e.g. 'Zoom' matches 'Zoom Video Communications').",
+
+  "excludedCompanies": [
+    "Landing",
+    "Zoom",
+    "Zoom Video Communications",
+    "Google",
+    "HubSpot",
+    "Slack",
+    "Microsoft",
+    "Salesforce",
+    "Calendly",
+    "People Center",
+    "People Center Inc",
+    "sunshine-energy.com",
+    "Detroit Metropolitan Apartment Association"
+  ],
+
+  "excludedDomains": [
+    "zoom.us",
+    "google.com",
+    "hubspot.com",
+    "slack.com",
+    "microsoft.com",
+    "salesforce.com",
+    "calendly.com",
+    "sunshine-energy.com"
+  ],
+
+  "_comment2": "Industries that confirm a company is a multifamily prospect (qualified). Blank industry = unverified (shown with warning). Everything else = not-mf (hidden with --qualified-only).",
+
+  "qualifyingIndustries": [
+    "Real Estate",
+    "REAL_ESTATE",
+    "Commercial Real Estate",
+    "Construction",
+    "CONSTRUCTION",
+    "Real Estate and Mortgage",
+    "Leasing Real Estate"
+  ],
+
+  "nonMFIndustries": [
+    "Technology",
+    "Information Technology and Services",
+    "Computer Software",
+    "Software as a Service (SaaS)",
+    "Internet",
+    "Financial Services",
+    "FINANCIAL_SERVICES",
+    "Banking",
+    "Healthcare",
+    "HEALTH_CARE",
+    "Hospital & Health Care",
+    "Retail",
+    "RETAIL",
+    "Education Management",
+    "EDUCATION_MANAGEMENT",
+    "Higher Education",
+    "Telecommunications",
+    "Media Production",
+    "Marketing and Advertising",
+    "Advertising Services",
+    "Transportation/Trucking/Railroad",
+    "Legal Services",
+    "Accounting",
+    "Government Administration",
+    "Energy",
+    "Utilities",
+    "Entertainment",
+    "Video Conferencing",
+    "Computer Hardware",
+    "Staffing and Recruiting",
+    "Insurance"
+  ]
+}

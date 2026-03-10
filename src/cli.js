@@ -27,10 +27,13 @@
 const fs   = require('fs');
 const path = require('path');
 
+const readline = require('readline');
+
 const { resolve } = require('./engine');
 const { qualify } = require('./qualify');
-const { enrichFromPropertyName, enrichOwnerHQ, looksLikePropertyName } = require('./search');
+const { enrichFromPropertyName, enrichOwnerHQ, enrichCompanyLocation, looksLikePropertyName } = require('./search');
 const { auditRep, KNOWN_REPS } = require('./audit');
+const { getCompany, updateCompany, getOwners, getPortalId } = require('./hubspot');
 
 // ---------------------------------------------------------------------------
 // Enrichment cache  (data/cache.json)
@@ -203,6 +206,31 @@ ${BOLD}Examples:${RESET}
 }
 
 // ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
+
+function humanizeDays(n) {
+  if (n === null || n === undefined) return '—';
+  if (n === 0)  return 'today';
+  if (n === 1)  return 'yesterday';
+  if (n < 7)    return `${n}d ago`;
+  if (n < 30)   return `${Math.round(n / 7)}w ago`;
+  if (n < 365)  return `${Math.round(n / 30)}mo ago`;
+  return `${Math.round(n / 365)}y ago`;
+}
+
+function qualBadge(status) {
+  if (status === 'qualified')   return `\x1b[32m● MF\x1b[0m`;
+  if (status === 'not-mf')      return `\x1b[31m● Non-MF\x1b[0m`;
+  return `\x1b[33m● Unverified\x1b[0m`;
+}
+
+function prompt(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return new Promise(resolve => rl.question(question, ans => { rl.close(); resolve(ans.trim()); }));
+}
+
+// ---------------------------------------------------------------------------
 // Audit output formatting
 // ---------------------------------------------------------------------------
 
@@ -215,19 +243,21 @@ const RULE_LABELS_AUDIT = {
 };
 
 function printConflictBlock(c, index, total) {
-  const idx = index !== undefined ? ` ${index + 1} of ${total}` : '';
+  const idx      = index !== undefined ? ` ${index + 1} of ${total}` : '';
+  const recency  = humanizeDays(c.daysSince);
+  const actLabel = `${c.activities} activit${c.activities !== 1 ? 'ies' : 'y'}`;
   console.log(BOLD + `  CONFLICT${idx}` + RESET);
   console.log(line('─'));
-  console.log(` Company     : ${BOLD}${c.companyName}${RESET}`);
+  console.log(` Company     : ${BOLD}${c.companyName}${RESET}  ${qualBadge(c.qualStatus)}`);
   console.log(` HubSpot     : ${DIM}${c.link}${RESET}`);
   console.log(` Market      : ${c.market}`);
-  console.log(` Working it  : \x1b[31m${c.workingRep}${RESET}  (${c.activities} activit${c.activities !== 1 ? 'ies' : 'y'})`);
+  console.log(` Working it  : \x1b[31m${c.workingRep}${RESET}  (${actLabel}, last: ${recency})`);
   console.log(` Should be   : \x1b[32m${BOLD}${c.expectedRep}${RESET}`);
   console.log(` Rule        : ${DIM}${RULE_LABELS_AUDIT[c.rule] || c.rule}${RESET}`);
 }
 
-function printAuditReport(result) {
-  const { rep, hubspotOwner, daysBack, companies, conflicts, error } = result;
+function printAuditReport(result, { qualifiedOnly = false } = {}) {
+  const { rep, hubspotOwner, daysBack, companies, conflicts, excluded = 0, error } = result;
 
   console.log('');
   console.log(BOLD + line('═') + RESET);
@@ -241,9 +271,12 @@ function printAuditReport(result) {
     return;
   }
 
-  const ownerEmail = hubspotOwner?.email ? `  (${hubspotOwner.email})` : '';
+  const ownerEmail   = hubspotOwner?.email ? `  (${hubspotOwner.email})` : '';
+  const excludedNote = excluded > 0 ? `  ${DIM}(${excluded} vendor/tool records excluded)${RESET}` : '';
+  const filterNote   = qualifiedOnly ? `  ${DIM}(--qualified-only: non-MF hidden)${RESET}` : '';
   console.log(` HubSpot owner : ${hubspotOwner.firstName} ${hubspotOwner.lastName}${ownerEmail}`);
-  console.log(` Companies hit : ${BOLD}${companies.length}${RESET}   ${DIM}│${RESET}   Conflicts: ${conflicts.length > 0 ? `\x1b[31m${BOLD}${conflicts.length}${RESET}` : `\x1b[32m${BOLD}0${RESET}`}`);
+  console.log(` Companies hit : ${BOLD}${companies.length}${RESET}${excludedNote}`);
+  console.log(` Conflicts     : ${conflicts.length > 0 ? `\x1b[31m${BOLD}${conflicts.length}${RESET}` : `\x1b[32m${BOLD}0${RESET}`}${filterNote}`);
 
   if (conflicts.length === 0) {
     console.log('');
@@ -280,8 +313,9 @@ function printAuditSummary(results) {
       console.log(`   ${DIM}${r.rep.padEnd(22)} — not found in HubSpot${RESET}`);
       continue;
     }
+    const excl = r.excluded > 0 ? ` ${DIM}(${r.excluded} excl.)${RESET}` : '';
     const flag = r.conflicts.length > 0 ? `  \x1b[31m⚠  ${r.conflicts.length} conflict${r.conflicts.length !== 1 ? 's' : ''}\x1b[0m` : `  \x1b[32m✓\x1b[0m`;
-    console.log(`   ${r.rep.padEnd(22)} — ${String(r.companies.length).padStart(3)} companies${flag}`);
+    console.log(`   ${r.rep.padEnd(22)} — ${String(r.companies.length).padStart(3)} companies${excl}${flag}`);
   }
 
   // Conflict detail grouped by rep
@@ -307,6 +341,113 @@ function printAuditSummary(results) {
 
   console.log(BOLD + line('═') + RESET);
   console.log('');
+}
+
+// ---------------------------------------------------------------------------
+// Fix helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch a company from HubSpot, search the web for corrected location data,
+ * show a diff, and if confirmed, write the update back to HubSpot.
+ */
+async function runFix(recordId) {
+  console.log('');
+  console.log(BOLD + line('═') + RESET);
+  console.log(BOLD + ` FIX — Company ${recordId}` + RESET);
+  console.log(BOLD + line('═') + RESET);
+
+  let company;
+  try {
+    company = await getCompany(recordId);
+  } catch (e) {
+    console.error(` \x1b[31mError fetching company: ${e.message}\x1b[0m`);
+    console.log(BOLD + line('═') + RESET);
+    return false;
+  }
+
+  const props = company.properties || {};
+  const name  = props.name || `(ID: ${recordId})`;
+
+  console.log(` Company  : ${BOLD}${name}${RESET}`);
+  console.log(` HubSpot  : https://app.hubspot.com/contacts/${process.env.HUBSPOT_PORTAL_ID || '?'}/company/${recordId}`);
+  console.log('');
+  console.log(` Current values:`);
+  console.log(`   city    : ${props.city    || DIM + '(blank)' + RESET}`);
+  console.log(`   state   : ${props.state   || DIM + '(blank)' + RESET}`);
+  console.log(`   address : ${props.address || DIM + '(blank)' + RESET}`);
+  console.log('');
+
+  console.log(`\x1b[2m  Searching web for "${name}" headquarters location...\x1b[0m`);
+  const found = await enrichCompanyLocation(name);
+
+  if (!found.city && !found.state && !found.address) {
+    console.log(`\x1b[33m  Could not find location data via web search.\x1b[0m`);
+    console.log(`\x1b[33m  Tip: search manually and update via the link above.\x1b[0m`);
+    console.log(BOLD + line('═') + RESET);
+    return false;
+  }
+
+  console.log(` Proposed corrections:`);
+  if (found.city)    console.log(`   city    : ${BOLD}\x1b[32m${found.city}\x1b[0m${RESET}   ${DIM}(was: ${props.city || 'blank'})${RESET}`);
+  if (found.state)   console.log(`   state   : ${BOLD}\x1b[32m${found.state}\x1b[0m${RESET}   ${DIM}(was: ${props.state || 'blank'})${RESET}`);
+  if (found.address) console.log(`   address : ${BOLD}\x1b[32m${found.address}\x1b[0m${RESET}   ${DIM}(was: ${props.address || 'blank'})${RESET}`);
+  console.log('');
+
+  const ans = await prompt(` Apply these changes? [y/N] `);
+  if (!ans.toLowerCase().startsWith('y')) {
+    console.log(` Skipped.`);
+    console.log(BOLD + line('═') + RESET);
+    return false;
+  }
+
+  const update = {};
+  if (found.city)    update.city    = found.city;
+  if (found.state)   update.state   = found.state;
+  if (found.address) update.address = found.address;
+
+  try {
+    await updateCompany(recordId, update);
+    console.log(` \x1b[32m✓  HubSpot record updated.\x1b[0m`);
+
+    // Append to audit log
+    const logPath = path.join(__dirname, '..', 'data', 'log.json');
+    let log = [];
+    try { log = JSON.parse(fs.readFileSync(logPath, 'utf8')); } catch { log = []; }
+    log.push({
+      timestamp:   new Date().toISOString(),
+      rule:        'FIX',
+      companyId:   recordId,
+      companyName: name,
+      before:      { city: props.city || null, state: props.state || null, address: props.address || null },
+      after:       update,
+      source:      'cli fix command'
+    });
+    fs.writeFileSync(logPath, JSON.stringify(log, null, 2));
+  } catch (e) {
+    console.error(` \x1b[31mError updating HubSpot: ${e.message}\x1b[0m`);
+    console.log(BOLD + line('═') + RESET);
+    return false;
+  }
+
+  console.log(BOLD + line('═') + RESET);
+  console.log('');
+  return true;
+}
+
+/**
+ * Batch-fix a list of conflict records that have missing location data.
+ * Prompts for confirmation on each one.
+ */
+async function runBatchFix(records) {
+  let fixed = 0;
+  for (const record of records) {
+    const didFix = await runFix(record.companyId);
+    if (didFix) fixed++;
+  }
+  if (fixed > 0) {
+    console.log(`\x1b[32m  ✓  ${fixed} of ${records.length} records updated in HubSpot.\x1b[0m\n`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -429,18 +570,19 @@ const [,, command, ...rest] = process.argv;
     printResult(result);
 
   } else if (command === 'audit') {
-    // ── audit <rep name> [--days <n>] ─────────────────────────────────────
+    // ── audit <rep name> [--days <n>] [--qualified-only] [--fix] ──────────
     if (!rest.length) {
       console.error('\x1b[31mError: Please provide a rep name, e.g. "audit Scout Bishop"\x1b[0m');
       process.exit(1);
     }
 
-    // Extract --days flag, rest is the rep name
-    let daysBack = 90;
+    let daysBack = 90, qualifiedOnly = false, fix = false;
     const nameTokens = [];
     for (let i = 0; i < rest.length; i++) {
-      if (rest[i] === '--days' && rest[i + 1]) { daysBack = parseInt(rest[++i], 10) || 90; }
-      else if (!rest[i].startsWith('--')) nameTokens.push(rest[i]);
+      if (rest[i] === '--days' && rest[i + 1])  { daysBack = parseInt(rest[++i], 10) || 90; }
+      else if (rest[i] === '--qualified-only')   { qualifiedOnly = true; }
+      else if (rest[i] === '--fix')              { fix = true; }
+      else if (!rest[i].startsWith('--'))        { nameTokens.push(rest[i]); }
     }
     const repName = nameTokens.join(' ').trim();
 
@@ -452,33 +594,53 @@ const [,, command, ...rest] = process.argv;
     const progress = (msg) => process.stderr.write(`\x1b[2m${msg}\x1b[0m\n`);
     progress(`\nAuditing ${repName}...`);
 
-    const result = await auditRep(repName, { daysBack, progress });
-    printAuditReport(result);
+    const result = await auditRep(repName, { daysBack, qualifiedOnly, progress });
+    printAuditReport(result, { qualifiedOnly });
+
+    // ── --fix: batch-fix companies with missing location data ─────────────
+    if (fix && result.conflicts?.length > 0) {
+      const missing = result.conflicts.filter(c => c.market === '—');
+      if (missing.length === 0) {
+        console.log(`\x1b[2m  --fix: all conflict companies have location data. Nothing to fix.\x1b[0m\n`);
+      } else {
+        console.log(`\x1b[33m  --fix: ${missing.length} conflict compan${missing.length !== 1 ? 'ies' : 'y'} missing city/state. Searching for corrections...\x1b[0m\n`);
+        await runBatchFix(missing);
+      }
+    }
 
   } else if (command === 'audit-all') {
-    // ── audit-all [--days <n>] ────────────────────────────────────────────
-    let daysBack = 90;
+    // ── audit-all [--days <n>] [--qualified-only] ─────────────────────────
+    let daysBack = 90, qualifiedOnly = false;
     for (let i = 0; i < rest.length; i++) {
       if (rest[i] === '--days' && rest[i + 1]) daysBack = parseInt(rest[++i], 10) || 90;
+      else if (rest[i] === '--qualified-only')  qualifiedOnly = true;
     }
 
     const progress = (msg) => process.stderr.write(`\x1b[2m${msg}\x1b[0m\n`);
 
-    // Pre-fetch shared data once
     progress('\nFetching HubSpot owners and portal ID...');
-    const { getOwners, getPortalId } = require('./hubspot');
     const [allOwners, portalId] = await Promise.all([getOwners(), getPortalId()]);
     progress(`  ${allOwners.length} HubSpot owners found. Portal ID: ${portalId}\n`);
 
     const results = [];
     for (const rep of KNOWN_REPS) {
       progress(`Auditing ${rep}...`);
-      const result = await auditRep(rep, { daysBack, allOwners, portalId, progress });
+      const result = await auditRep(rep, { daysBack, allOwners, portalId, qualifiedOnly, progress });
       results.push(result);
       progress('');
     }
 
     printAuditSummary(results);
+
+  } else if (command === 'fix') {
+    // ── fix <hubspot-record-id> ───────────────────────────────────────────
+    const recordId = rest.find(r => !r.startsWith('--'));
+    if (!recordId) {
+      console.error('\x1b[31mError: Please provide a HubSpot company record ID, e.g. "fix 8924545632"\x1b[0m');
+      process.exit(1);
+    }
+
+    await runFix(recordId);
 
   } else {
     printUsage();

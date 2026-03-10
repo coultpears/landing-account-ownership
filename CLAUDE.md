@@ -268,37 +268,75 @@ Append to `top20MSAs` in `data/markets.json` with `id`, `name`, `states[]`, and 
 node src/cli.js audit "Scout Bishop"
 node src/cli.js audit "Wells Davis" --days 30
 
-# Full team audit — runs every rep, produces a combined conflict report
+# Show only companies that look like MF prospects (hide confirmed non-MF)
+node src/cli.js audit "Scout Bishop" --qualified-only
+
+# After the audit, batch-fix companies with missing city/state in HubSpot
+node src/cli.js audit "Scout Bishop" --fix
+
+# Full team audit
 node src/cli.js audit-all
-node src/cli.js audit-all --days 60
+node src/cli.js audit-all --days 60 --qualified-only
+
+# Fix a single company record by HubSpot record ID
+node src/cli.js fix 8924545632
 
 # Via npm scripts
 npm run audit -- "Scout Bishop"
 npm run audit-all
+npm run fix -- 8924545632
 ```
 
-### `--days` flag
-Sets the lookback window for HubSpot activity (calls, emails, meetings, tasks, deals). Default: 90 days.
+### Audit flags
+
+| Flag | Description |
+|------|-------------|
+| `--days <n>` | Lookback window for activity (default: 90) |
+| `--qualified-only` | Hide companies with a confirmed non-MF industry (e.g. Technology, Healthcare). Unverified industry = still shown with a warning badge. |
+| `--fix` | After the audit, interactively fix companies in conflict that have missing city/state data |
+
+### Qualification badges
+Each conflict shows one of three industry badges:
+- `● MF` (green) — HubSpot industry matches qualifying list (Real Estate, Construction, etc.)
+- `● Unverified` (yellow) — industry field is blank in HubSpot; shown even with `--qualified-only`
+- `● Non-MF` (red) — industry is clearly not multifamily; hidden by `--qualified-only`
+
+To add/remove qualifying or non-qualifying industries, edit `data/config.json`.
+
+### Recency sorting
+Conflicts are sorted most-recent-first based on `hs_timestamp` from HubSpot engagements and `hs_lastmodifieddate` from deals. The "last activity" date is shown per conflict so you can distinguish an account that was touched this week from one that hasn't had activity in months.
+
+### Exclusion list (`data/config.json`)
+Companies matching `excludedCompanies` names (partial, case-insensitive) or `excludedDomains` are silently dropped before conflict detection. Add entries to this file to suppress vendor, tool, or internal records from appearing in reports.
+
+### Fix command
+`fix <record-id>` fetches a company from HubSpot, runs a web search for its HQ city/state/address, shows a before/after diff, and writes the correction back to HubSpot on confirmation. Every fix is logged to `data/log.json` with `rule: "FIX"`.
+
+The `--fix` flag on `audit` does the same thing in batch for all conflict companies missing city/state data.
+
+**Note:** DuckDuckGo's API is best-effort. For important records, verify the proposed values before confirming. In Claude Code sessions, Claude's built-in WebSearch produces more reliable results — run a web search first and pass values manually if needed.
 
 ### How conflict detection works
 
 1. For the given rep, the engine searches HubSpot for every deal they own and every engagement (call, email, meeting, task) they've logged in the lookback window.
 2. Each engagement/deal is mapped to its associated company record(s) via HubSpot's v4 batch associations API.
-3. Every unique company is run through `engine.resolve()` using the company name and city/state as the market string.
-4. **Conflict** = the engine assigns the account to someone other than the audited rep (and the result is not UNASSIGNED).
-5. Output shows: company name, HubSpot link, who's working it, who should own it, which resolution rule triggered, and how many activities the wrong rep has logged.
+3. Companies matching the exclusion list in `data/config.json` are dropped.
+4. Every remaining company is run through `engine.resolve()` using company name + city/state.
+5. **Conflict** = the engine assigns the account to someone other than the audited rep (and result is not UNASSIGNED).
+6. Conflicts are sorted by most recent HubSpot activity first, with industry qualification badge and last-activity recency shown for each.
 
 `audit-all` runs all 13 reps sequentially (to stay within HubSpot rate limits), pre-fetches owners and portal ID once, and outputs a combined report grouped by rep.
 
-### New source files
+### Source files
 
 | File | Purpose |
 |------|---------|
-| `src/hubspot.js` | HubSpot API wrapper (owners, deals, engagements, associations, companies) |
-| `src/audit.js` | Audit logic — ties HubSpot data to the ownership engine |
+| `src/hubspot.js` | HubSpot API wrapper (owners, deals, engagements, associations, companies, PATCH) |
+| `src/audit.js` | Audit logic — exclusion, qual status, recency tracking, conflict detection |
+| `data/config.json` | Exclusion list, qualifying/non-MF industry lists |
 
 ### Company-to-market mapping
-The audit uses `city` + `state` from the HubSpot company record as the market string passed to `resolve()`. If either field is blank in HubSpot, the market string is partial or missing, which may affect Tier 4 state fallback accuracy. Keep HubSpot company records up to date with city/state for best results.
+The audit uses `city` + `state` from the HubSpot company record as the market string passed to `resolve()`. If either field is blank, the market string is missing and Tier 4 state fallback cannot run. Use `audit --fix` or `fix <id>` to correct records with missing location data.
 
 ---
 
