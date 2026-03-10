@@ -255,6 +255,27 @@ async function updateCompany(companyId, properties) {
   return apiRequest('PATCH', `/crm/v3/objects/companies/${companyId}`, { properties });
 }
 
+// ---------------------------------------------------------------------------
+// Public: Ensure the landing_ownership_rule custom property exists
+// Call once before writing to landing_ownership_rule. Safe to call repeatedly —
+// a 409 (already exists) is silently swallowed.
+// ---------------------------------------------------------------------------
+
+async function ensureOwnershipRuleProperty() {
+  try {
+    await apiRequest('POST', '/crm/v3/properties/companies', {
+      name:      'landing_ownership_rule',
+      label:     'Ownership Rule',
+      type:      'string',
+      fieldType: 'text',
+      groupName: 'companyinformation'
+    });
+  } catch (e) {
+    if (!e.message.includes('409')) throw e;
+    // 409 = property already exists — no action needed
+  }
+}
+
 module.exports = {
   getOwners,
   getPortalId,
@@ -263,5 +284,6 @@ module.exports = {
   getAssociatedCompanyIds,
   getCompaniesBatch,
   getCompany,
-  updateCompany
+  updateCompany,
+  ensureOwnershipRuleProperty
 };

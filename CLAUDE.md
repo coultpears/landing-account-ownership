@@ -324,10 +324,29 @@ Each conflict shows one of three industry badges:
 To add/remove qualifying or non-qualifying industries, edit `data/config.json`.
 
 ### Recency sorting
-Conflicts are sorted most-recent-first based on `hs_timestamp` from HubSpot engagements and `hs_lastmodifieddate` from deals. The "last activity" date is shown per conflict so you can distinguish an account that was touched this week from one that hasn't had activity in months.
+Conflicts are sorted most-recent-first based on `hs_timestamp` from HubSpot engagements and `hs_lastmodifieddate` from deals. Each conflict shows a dedicated **Last activity** line (e.g. `3d ago`, `2w ago`) so you can instantly distinguish hot accounts from dormant ones.
 
 ### Exclusion list (`data/config.json`)
-Companies matching `excludedCompanies` names (partial, case-insensitive) or `excludedDomains` are silently dropped before conflict detection. Add entries to this file to suppress vendor, tool, or internal records from appearing in reports.
+Companies matching `excludedCompanies` names (partial, case-insensitive) or `excludedDomains` are silently dropped before conflict detection. Edit `data/config.json` to add new entries — no code changes needed. Current defaults include Landing, Zoom, Google, HubSpot, Slack, Microsoft, Salesforce, Calendly, and others.
+
+### Owner reassignment prompt
+After each conflict block is displayed, the CLI prompts:
+
+```
+Reassign to [Correct Rep] based on [RULE]? Currently: [Wrong Rep]. [y/N]
+```
+
+- **Yes** — updates `hubspot_owner_id` to the correct rep's HubSpot ID and writes `landing_ownership_rule` = rule tier (e.g. `STATE_FALLBACK`). Change is logged to `data/log.json` with `action: "accepted"`.
+- **No** — writes `landing_ownership_rule` = `EXCEPTION — [RULE] declined by user on [date]`. Logged with `action: "declined"`.
+
+When multiple reps qualify (e.g. TX split), the prompt lists options by number.
+
+Rep → HubSpot owner ID mappings live in `repOwnerIds` in `data/config.json`. To add a new rep: find their owner ID in HubSpot (Settings → Users & Teams → click user, copy ID from URL) and add to `repOwnerIds`.
+
+### Ownership Rule property (`landing_ownership_rule`)
+Custom single-line text property on the company object (group: companyinformation). Created automatically the first time `audit` or `audit-all` runs — no manual HubSpot setup needed. Written on every conflict resolution:
+- Accepted: the rule tier (`TOP_50`, `OWNER_ASSIGNMENT`, `STATE_FALLBACK`, etc.)
+- Declined: `EXCEPTION — [RULE] declined by user on YYYY-MM-DD`
 
 ### Fix command
 `fix <record-id>` fetches a company from HubSpot, runs a web search for its HQ city/state/address, shows a before/after diff, and writes the correction back to HubSpot on confirmation. Every fix is logged to `data/log.json` with `rule: "FIX"`.
@@ -343,17 +362,18 @@ The `--fix` flag on `audit` does the same thing in batch for all conflict compan
 3. Companies matching the exclusion list in `data/config.json` are dropped.
 4. Every remaining company is run through `engine.resolve()` using company name + city/state.
 5. **Conflict** = the engine assigns the account to someone other than the audited rep (and result is not UNASSIGNED).
-6. Conflicts are sorted by most recent HubSpot activity first, with industry qualification badge and last-activity recency shown for each.
+6. Conflicts are sorted by most recent HubSpot activity first. Each conflict block shows last activity + interactive reassignment prompt.
 
-`audit-all` runs all 13 reps sequentially (to stay within HubSpot rate limits), pre-fetches owners and portal ID once, and outputs a combined report grouped by rep.
+`audit-all` runs all reps sequentially (to stay within HubSpot rate limits), pre-fetches owners and portal ID once, and outputs a combined report grouped by rep — with the reassignment prompt after each conflict.
 
 ### Source files
 
 | File | Purpose |
 |------|---------|
-| `src/hubspot.js` | HubSpot API wrapper (owners, deals, engagements, associations, companies, PATCH) |
+| `src/hubspot.js` | HubSpot API wrapper (owners, deals, engagements, associations, companies, PATCH, property creation) |
 | `src/audit.js` | Audit logic — exclusion, qual status, recency tracking, conflict detection |
-| `data/config.json` | Exclusion list, qualifying/non-MF industry lists |
+| `src/cli.js` | CLI — conflict display, reassignment prompts, ownership rule writes |
+| `data/config.json` | Exclusion list, rep owner IDs, qualifying/non-MF industry lists |
 
 ### Company-to-market mapping
 The audit uses `city` + `state` from the HubSpot company record as the market string passed to `resolve()`. If either field is blank, the market string is missing and Tier 4 state fallback cannot run. Use `audit --fix` or `fix <id>` to correct records with missing location data.
@@ -363,7 +383,6 @@ The audit uses `city` + `state` from the HubSpot company record as the market st
 ## Phase 2 Ideas (remaining)
 
 - REST API wrapper around `engine.js`
-- Push resolution results back to HubSpot company records (custom property)
 - Conflict escalation workflow (flag for manager review, Slack notification)
 - Confidence threshold tuning per rule tier
 - Web UI for checking ownership without CLI

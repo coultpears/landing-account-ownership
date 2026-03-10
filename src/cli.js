@@ -33,7 +33,7 @@ const { resolve } = require('./engine');
 const { qualify } = require('./qualify');
 const { enrichFromPropertyName, enrichOwnerHQ, enrichCompanyLocation, looksLikePropertyName } = require('./search');
 const { auditRep, KNOWN_REPS } = require('./audit');
-const { getCompany, updateCompany, getOwners, getPortalId } = require('./hubspot');
+const { getCompany, updateCompany, getOwners, getPortalId, ensureOwnershipRuleProperty } = require('./hubspot');
 
 // ---------------------------------------------------------------------------
 // Enrichment cache  (data/cache.json)
@@ -91,6 +91,26 @@ function parseArgs(args) {
   }
 
   return input;
+}
+
+// ---------------------------------------------------------------------------
+// Config + log helpers (used by audit interactive flow)
+// ---------------------------------------------------------------------------
+
+function loadCliConfig() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'data', 'config.json'), 'utf8'));
+  } catch {
+    return { repOwnerIds: {} };
+  }
+}
+
+function appendLog(entry) {
+  const logPath = path.join(__dirname, '..', 'data', 'log.json');
+  let log = [];
+  try { log = JSON.parse(fs.readFileSync(logPath, 'utf8')); } catch { log = []; }
+  log.push(entry);
+  try { fs.writeFileSync(logPath, JSON.stringify(log, null, 2)); } catch { /* non-fatal */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -248,15 +268,88 @@ function printConflictBlock(c, index, total) {
   const actLabel = `${c.activities} activit${c.activities !== 1 ? 'ies' : 'y'}`;
   console.log(BOLD + `  CONFLICT${idx}` + RESET);
   console.log(line('─'));
-  console.log(` Company     : ${BOLD}${c.companyName}${RESET}  ${qualBadge(c.qualStatus)}`);
-  console.log(` HubSpot     : ${DIM}${c.link}${RESET}`);
-  console.log(` Market      : ${c.market}`);
-  console.log(` Working it  : \x1b[31m${c.workingRep}${RESET}  (${actLabel}, last: ${recency})`);
-  console.log(` Should be   : \x1b[32m${BOLD}${c.expectedRep}${RESET}`);
-  console.log(` Rule        : ${DIM}${RULE_LABELS_AUDIT[c.rule] || c.rule}${RESET}`);
+  console.log(` Company       : ${BOLD}${c.companyName}${RESET}  ${qualBadge(c.qualStatus)}`);
+  console.log(` HubSpot       : ${DIM}${c.link}${RESET}`);
+  console.log(` Market        : ${c.market}`);
+  console.log(` Last activity : ${BOLD}${recency}${RESET}  ${DIM}(${actLabel})${RESET}`);
+  console.log(` Working it    : \x1b[31m${c.workingRep}${RESET}`);
+  console.log(` Should be     : \x1b[32m${BOLD}${c.expectedRep}${RESET}`);
+  console.log(` Rule          : ${DIM}${RULE_LABELS_AUDIT[c.rule] || c.rule}${RESET}`);
 }
 
-function printAuditReport(result, { qualifiedOnly = false } = {}) {
+/**
+ * After printing a conflict block, prompt the user to reassign the HubSpot
+ * company owner to the correct rep. Always writes landing_ownership_rule —
+ * either the rule tier (accepted) or an EXCEPTION note (declined).
+ */
+async function promptConflictReassignment(c, config) {
+  const repOwnerIds = config.repOwnerIds || {};
+  const today       = new Date().toISOString().slice(0, 10);
+
+  if (c.expectedRep === 'UNASSIGNED') return;
+
+  const expectedReps = c.expectedRep.split(' / ').map(r => r.trim()).filter(Boolean);
+  const assignable   = expectedReps.filter(r => repOwnerIds[r]);
+
+  if (assignable.length === 0) {
+    console.log(`  ${DIM}(No HubSpot owner ID mapped for "${c.expectedRep}" — skipping auto-assign)${RESET}`);
+    return;
+  }
+
+  let targetRep;
+
+  if (assignable.length === 1) {
+    targetRep = assignable[0];
+    const ans = await prompt(
+      `  Reassign to \x1b[32m${BOLD}${targetRep}${RESET} based on ${DIM}${c.rule}${RESET}?` +
+      ` Currently: \x1b[31m${c.workingRep}${RESET}. [y/N] `
+    );
+    if (!ans.toLowerCase().startsWith('y')) {
+      const ruleValue = `EXCEPTION — ${c.rule} declined by user on ${today}`;
+      try { await updateCompany(c.companyId, { landing_ownership_rule: ruleValue }); }
+      catch (e) { console.log(`  \x1b[33m  Warning: could not write ownership rule: ${e.message}\x1b[0m`); }
+      appendLog({ timestamp: new Date().toISOString(), rule: 'OWNER_REASSIGNMENT', action: 'declined',
+        companyId: c.companyId, companyName: c.companyName, from: c.workingRep, to: targetRep, hsRule: c.rule });
+      console.log(`  ${DIM}Logged as declined.${RESET}`);
+      return;
+    }
+  } else {
+    // Multiple reps qualify — let user pick
+    const choices = assignable.map((r, i) => `[${i + 1}] ${r}`).join('  ');
+    console.log(`  Multiple reps qualify: ${choices}`);
+    const ans = await prompt(`  Reassign to which rep? Enter 1–${assignable.length}, or [n]o: `);
+    if (!ans || ans.toLowerCase().startsWith('n')) {
+      const ruleValue = `EXCEPTION — ${c.rule} declined by user on ${today}`;
+      try { await updateCompany(c.companyId, { landing_ownership_rule: ruleValue }); }
+      catch {}
+      console.log(`  ${DIM}Logged as declined.${RESET}`);
+      return;
+    }
+    const idx = parseInt(ans, 10) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= assignable.length) {
+      console.log(`  Invalid selection — skipping.`);
+      return;
+    }
+    targetRep = assignable[idx];
+  }
+
+  // Apply the owner update + write landing_ownership_rule
+  const newOwnerId = repOwnerIds[targetRep];
+  try {
+    await updateCompany(c.companyId, {
+      hubspot_owner_id:      newOwnerId,
+      landing_ownership_rule: c.rule
+    });
+    console.log(`  \x1b[32m✓  HubSpot owner → ${targetRep}\x1b[0m`);
+    appendLog({ timestamp: new Date().toISOString(), rule: 'OWNER_REASSIGNMENT', action: 'accepted',
+      companyId: c.companyId, companyName: c.companyName, from: c.workingRep, to: targetRep,
+      newOwnerId, hsRule: c.rule });
+  } catch (e) {
+    console.log(`  \x1b[31m  Error updating HubSpot: ${e.message}\x1b[0m`);
+  }
+}
+
+async function runAuditReport(result, { qualifiedOnly = false } = {}) {
   const { rep, hubspotOwner, daysBack, companies, conflicts, excluded = 0, error } = result;
 
   console.log('');
@@ -282,18 +375,20 @@ function printAuditReport(result, { qualifiedOnly = false } = {}) {
     console.log('');
     console.log(` \x1b[32m✓  No conflicts — ${rep} is correctly assigned on all active accounts.\x1b[0m`);
   } else {
+    const config = loadCliConfig();
     console.log(line('─'));
-    conflicts.forEach((c, i) => {
-      printConflictBlock(c, i, conflicts.length);
+    for (let i = 0; i < conflicts.length; i++) {
+      printConflictBlock(conflicts[i], i, conflicts.length);
+      await promptConflictReassignment(conflicts[i], config);
       if (i < conflicts.length - 1) console.log(line('─'));
-    });
+    }
   }
 
   console.log(BOLD + line('═') + RESET);
   console.log('');
 }
 
-function printAuditSummary(results) {
+async function runAuditSummary(results) {
   const totalCompanies = results.reduce((n, r) => n + (r.companies?.length || 0), 0);
   const totalConflicts = results.reduce((n, r) => n + (r.conflicts?.length || 0), 0);
   const daysBack       = results[0]?.daysBack || 90;
@@ -325,14 +420,16 @@ function printAuditSummary(results) {
     console.log(BOLD + line('─') + RESET);
     console.log(BOLD + ' CONFLICTS:' + RESET);
 
+    const config = loadCliConfig();
     for (const r of withConflicts) {
       console.log('');
       console.log(BOLD + ` ${r.rep}` + RESET + DIM + ` (${r.conflicts.length} conflict${r.conflicts.length !== 1 ? 's' : ''})` + RESET);
       console.log(line('─'));
-      r.conflicts.forEach((c, i) => {
-        printConflictBlock(c, i, r.conflicts.length);
+      for (let i = 0; i < r.conflicts.length; i++) {
+        printConflictBlock(r.conflicts[i], i, r.conflicts.length);
+        await promptConflictReassignment(r.conflicts[i], config);
         if (i < r.conflicts.length - 1) console.log(line('─'));
-      });
+      }
     }
   } else {
     console.log('');
@@ -594,8 +691,9 @@ const [,, command, ...rest] = process.argv;
     const progress = (msg) => process.stderr.write(`\x1b[2m${msg}\x1b[0m\n`);
     progress(`\nAuditing ${repName}...`);
 
+    await ensureOwnershipRuleProperty();
     const result = await auditRep(repName, { daysBack, qualifiedOnly, progress });
-    printAuditReport(result, { qualifiedOnly });
+    await runAuditReport(result, { qualifiedOnly });
 
     // ── --fix: batch-fix companies with missing location data ─────────────
     if (fix && result.conflicts?.length > 0) {
@@ -622,6 +720,8 @@ const [,, command, ...rest] = process.argv;
     const [allOwners, portalId] = await Promise.all([getOwners(), getPortalId()]);
     progress(`  ${allOwners.length} HubSpot owners found. Portal ID: ${portalId}\n`);
 
+    await ensureOwnershipRuleProperty();
+
     const results = [];
     for (const rep of KNOWN_REPS) {
       progress(`Auditing ${rep}...`);
@@ -630,7 +730,7 @@ const [,, command, ...rest] = process.argv;
       progress('');
     }
 
-    printAuditSummary(results);
+    await runAuditSummary(results);
 
   } else if (command === 'fix') {
     // ── fix <hubspot-record-id> ───────────────────────────────────────────

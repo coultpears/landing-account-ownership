@@ -1,5 +1,22 @@
 {
-  "_comment": "Edit excludedCompanies / excludedDomains to suppress non-prospect records from conflict reports. Names are matched case-insensitively. Partial matches work (e.g. 'Zoom' matches 'Zoom Video Communications').",
+  "_comment": "Edit excludedCompanies / excludedDomains to suppress non-prospect records from conflict reports. Names are matched case-insensitively. Partial matches work (e.g. 'Zoom' matches 'Zoom Video Communications'). Add new entries here — no code changes needed.",
+
+  "_comment_repOwnerIds": "HubSpot owner IDs for reps that can be auto-assigned via the audit reassignment prompt. Add new reps here using their HubSpot owner ID (Settings → Users & Teams → click user → copy ID from URL).",
+
+  "repOwnerIds": {
+    "Jack Thomasson":      "529750404",
+    "Wells Davis":         "688903278",
+    "John LaVanway":       "83710893",
+    "Scout Bishop":        "80597251",
+    "Ashtyn Garner":       "88071927",
+    "Renato Lagomarsino":  "88604137",
+    "Sophia Nadler":       "86072303",
+    "Richard Baugh":       "86294642",
+    "Raegan Harris":       "80477558",
+    "Ghislain Cossio":     "80750051",
+    "Nolan Moran":         "81286749",
+    "Xander Williams":     "80597267"
+  },
 
   "excludedCompanies": [
     "Landing",
