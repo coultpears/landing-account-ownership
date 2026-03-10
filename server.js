@@ -93,8 +93,12 @@ if (process.env.SLACK_APP_TOKEN) {
   });
 
   app = new App({
-    token:    process.env.SLACK_BOT_TOKEN,
-    receiver
+    token:                process.env.SLACK_BOT_TOKEN,
+    receiver,
+    // Required for Cloud Run: keeps the HTTP connection open until ack() is
+    // called inside the handler, which prevents Cloud Run from throttling the
+    // CPU before the handler's async work (respond() calls, HubSpot API) runs.
+    processBeforeResponse: true
   });
 }
 
@@ -211,6 +215,18 @@ function qualBadge(status) {
 }
 
 // ---------------------------------------------------------------------------
+// Structured logger
+// ---------------------------------------------------------------------------
+
+/**
+ * Emits a single-line JSON log to stdout. Cloud Run captures stdout as
+ * structured Cloud Logging entries, making these queryable in Log Explorer.
+ */
+function log(event, data = {}) {
+  console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...data }));
+}
+
+// ---------------------------------------------------------------------------
 // Block Kit helpers
 // ---------------------------------------------------------------------------
 
@@ -315,15 +331,21 @@ function buildRepOptions(repOwnerIds) {
 // ---------------------------------------------------------------------------
 
 app.command('/check', async ({ command, ack, respond }) => {
+  const t0 = Date.now();
+  log('cmd_received', { cmd: '/check', user: command.user_name, text: command.text });
+
   await ack();
+  log('ack_sent', { cmd: '/check', ackMs: Date.now() - t0 });
 
   const text = (command.text || '').trim();
   if (!text) {
     await respond('Usage: `/check [owner or property name]`\nExamples: `/check Greystar` · `/check MAA --market "Dallas TX"` · `/check "Axis 201"`');
+    log('respond_sent', { cmd: '/check', ms: Date.now() - t0, result: 'usage' });
     return;
   }
 
   await respond({ response_type: 'ephemeral', text: `_Resolving ownership for *${text}*…_` });
+  log('respond_working', { cmd: '/check', ms: Date.now() - t0 });
 
   try {
     let input = parseCheckText(text);
@@ -538,9 +560,11 @@ app.command('/check', async ({ command, ack, respond }) => {
       blocks.push(section('_No HubSpot record found — search HubSpot manually to assign._'));
     }
 
+    log('respond_sent', { cmd: '/check', ms: Date.now() - t0, rule: result.rule, rep: repDisplay, conflict: isConflict, companyId });
     await respond({ blocks, replace_original: true });
 
   } catch (err) {
+    log('error', { cmd: '/check', ms: Date.now() - t0, error: err.message });
     await respond({ text: `❌ Error: ${err.message}`, replace_original: true });
   }
 });
@@ -641,7 +665,11 @@ app.action('check_assign_other', async ({ body, ack, respond }) => {
 // ---------------------------------------------------------------------------
 
 app.command('/audit-me', async ({ command, ack, respond, client }) => {
+  const t0 = Date.now();
+  log('cmd_received', { cmd: '/audit-me', user: command.user_name });
+
   await ack();
+  log('ack_sent', { cmd: '/audit-me', ackMs: Date.now() - t0 });
 
   // Resolve Slack user → rep name
   let repName = null;
@@ -659,16 +687,19 @@ app.command('/audit-me', async ({ command, ack, respond, client }) => {
       `Add \`'${command.user_id}': '<Rep Name>'\` to \`SLACK_TO_REP\` in \`server.js\`.\n` +
       `Known reps: ${KNOWN_REPS.join(', ')}`
     );
+    log('respond_sent', { cmd: '/audit-me', ms: Date.now() - t0, result: 'no_rep_mapping' });
     return;
   }
 
   await respond({ response_type: 'ephemeral', text: `_Running audit for *${repName}*… (this may take 30–60 seconds)_` });
+  log('respond_working', { cmd: '/audit-me', ms: Date.now() - t0, rep: repName });
 
   try {
     await ensureOwnershipRuleProperty();
     const result = await auditRep(repName, { daysBack: 90, qualifiedOnly: false });
 
     if (result.error) {
+      log('error', { cmd: '/audit-me', ms: Date.now() - t0, rep: repName, error: result.error });
       await respond({ text: `❌ ${result.error}`, replace_original: true });
       return;
     }
@@ -707,9 +738,11 @@ app.command('/audit-me', async ({ command, ack, respond, client }) => {
       blocks.push(section('_Use `/fix [HubSpot record ID]` to reassign individual records._'));
     }
 
+    log('respond_sent', { cmd: '/audit-me', ms: Date.now() - t0, rep: repName, companies: companies.length, conflicts: conflicts.length });
     await respond({ blocks, replace_original: true });
 
   } catch (err) {
+    log('error', { cmd: '/audit-me', ms: Date.now() - t0, rep: repName, error: err.message });
     await respond({ text: `❌ Audit failed: ${err.message}`, replace_original: true });
   }
 });
@@ -719,15 +752,21 @@ app.command('/audit-me', async ({ command, ack, respond, client }) => {
 // ---------------------------------------------------------------------------
 
 app.command('/fix', async ({ command, ack, respond }) => {
+  const t0 = Date.now();
+  log('cmd_received', { cmd: '/fix', user: command.user_name, text: command.text });
+
   await ack();
+  log('ack_sent', { cmd: '/fix', ackMs: Date.now() - t0 });
 
   const text = (command.text || '').trim();
   if (!text) {
     await respond('Usage: `/fix [HubSpot record ID]` or `/fix [company name]`\nExample: `/fix 8924545632`');
+    log('respond_sent', { cmd: '/fix', ms: Date.now() - t0, result: 'usage' });
     return;
   }
 
   await respond({ response_type: 'ephemeral', text: `_Looking up *${text}*…_` });
+  log('respond_working', { cmd: '/fix', ms: Date.now() - t0 });
 
   try {
     await ensureOwnershipRuleProperty();
@@ -843,9 +882,11 @@ app.command('/fix', async ({ command, ack, respond }) => {
       });
     }
 
+    log('respond_sent', { cmd: '/fix', ms: Date.now() - t0, companyId, rule: resolution.rule, expectedRep, conflict: isConflict });
     await respond({ blocks, replace_original: true });
 
   } catch (err) {
+    log('error', { cmd: '/fix', ms: Date.now() - t0, error: err.message });
     await respond({ text: `❌ Error: ${err.message}`, replace_original: true });
   }
 });
