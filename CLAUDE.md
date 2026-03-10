@@ -258,7 +258,7 @@ Append to `top20MSAs` in `data/markets.json` with `id`, `name`, `states[]`, and 
 
 1. Copy `.env.example` to `.env` and fill in `HUBSPOT_TOKEN` with a private app token.
 2. In HubSpot: **Settings → Integrations → Private Apps → Create private app.**
-3. Required scopes: `crm.objects.companies.read`, `crm.objects.deals.read`, `crm.objects.contacts.read`, `sales-email-read`, `crm.objects.owners.read`, `crm.schemas.companies.read`, `crm.associations.read`
+3. Required scopes: `crm.objects.companies.read`, `crm.objects.companies.write` (needed for `fix` command), `crm.objects.deals.read`, `crm.objects.contacts.read`, `sales-email-read`, `crm.objects.owners.read`, `crm.schemas.companies.read`, `crm.associations.read`
 4. Optionally set `HUBSPOT_PORTAL_ID` to skip one API call on startup.
 
 ### Commands
