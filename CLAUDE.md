@@ -280,7 +280,7 @@ Edit `qualifyingIndustries` or `nonMFIndustries` in `data/config.json`. Values m
 
 1. Copy `.env.example` to `.env` and fill in `HUBSPOT_TOKEN` with a private app token.
 2. In HubSpot: **Settings → Integrations → Private Apps → Create private app.**
-3. Required scopes: `crm.objects.companies.read`, `crm.objects.companies.write` (needed for `fix` command), `crm.objects.deals.read`, `crm.objects.contacts.read`, `sales-email-read`, `crm.objects.owners.read`, `crm.schemas.companies.read`, `crm.associations.read`
+3. Required scopes: `crm.objects.companies.read`, `crm.objects.companies.write` (needed for `fix` command and owner reassignment), `crm.objects.deals.read`, `crm.objects.contacts.read`, `sales-email-read`, `crm.objects.owners.read`, `crm.schemas.companies.read`, `crm.schemas.companies.write` (needed to auto-create the `landing_ownership_rule` custom property), `crm.associations.read`
 4. Optionally set `HUBSPOT_PORTAL_ID` to skip one API call on startup.
 
 ### Commands

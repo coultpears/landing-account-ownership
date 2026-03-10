@@ -229,8 +229,18 @@ async function performAssignment(fix, targetRep, slackUserName) {
 
   const newOwnerId = repOwnerIds[targetRep] || null;
 
-  const update = { landing_ownership_rule: rule };
-  if (newOwnerId) update.hubspot_owner_id = newOwnerId;
+  // Try to write landing_ownership_rule; fall back silently if the property
+  // doesn't exist (missing crm.schemas.companies.write scope on the private app).
+  let ruleWritten = true;
+  try {
+    await ensureOwnershipRuleProperty();
+  } catch {
+    ruleWritten = false;
+  }
+
+  const update = {};
+  if (ruleWritten) update.landing_ownership_rule = rule;
+  if (newOwnerId)  update.hubspot_owner_id        = newOwnerId;
   // Auto-fill city/state with web-discovered data when the HubSpot record was missing them
   if (!hsCity  && webCity)  update.city  = webCity;
   if (!hsState && webState) update.state = webState;
@@ -250,10 +260,11 @@ async function performAssignment(fix, targetRep, slackUserName) {
     newOwnerId,
     hsRule:         rule,
     locationFilled: !!locationFilled,
+    ruleWritten,
     slackUser:      slackUserName
   });
 
-  return { locationFilled };
+  return { locationFilled, ruleWritten };
 }
 
 /**
@@ -522,12 +533,13 @@ app.action('check_assign_suggested', async ({ body, ack, respond }) => {
   const targetRep = reps.find(r => fix.repOwnerIds[r]) || reps[0];
 
   try {
-    const { locationFilled } = await performAssignment(fix, targetRep, body.user?.name || body.user?.id);
+    const { locationFilled, ruleWritten } = await performAssignment(fix, targetRep, body.user?.name || body.user?.id);
     pendingFixes.delete(checkKey);
 
-    const locationNote = locationFilled
-      ? `\n📍 *Also updated:* city/state filled in from enrichment data.`
-      : '';
+    const notes = [
+      locationFilled ? '📍 *Also updated:* city/state filled in from enrichment data.' : null,
+      !ruleWritten   ? '⚠ `landing_ownership_rule` not written — add `crm.schemas.companies.write` scope to your HubSpot private app.' : null
+    ].filter(Boolean).join('\n');
 
     await respond({
       replace_original: true,
@@ -536,10 +548,10 @@ app.action('check_assign_suggested', async ({ body, ack, respond }) => {
         section(
           `*Company:* <${fix.link}|${fix.companyName}>\n` +
           `*Assigned to:* *${targetRep}*\n` +
-          `*Rule written:* \`${fix.rule}\`\n` +
-          `*By:* ${body.user?.name || 'Unknown'} on ${today}` +
-          locationNote
-        )
+          (ruleWritten ? `*Rule written:* \`${fix.rule}\`\n` : '') +
+          `*By:* ${body.user?.name || 'Unknown'} on ${today}`
+        ),
+        ...(notes ? [section(notes)] : [])
       ]
     });
   } catch (err) {
@@ -565,12 +577,13 @@ app.action('check_assign_other', async ({ body, ack, respond }) => {
   }
 
   try {
-    const { locationFilled } = await performAssignment(fix, targetRep, body.user?.name || body.user?.id);
+    const { locationFilled, ruleWritten } = await performAssignment(fix, targetRep, body.user?.name || body.user?.id);
     pendingFixes.delete(checkKey);
 
-    const locationNote = locationFilled
-      ? `\n📍 *Also updated:* city/state filled in from enrichment data.`
-      : '';
+    const notes = [
+      locationFilled ? '📍 *Also updated:* city/state filled in from enrichment data.' : null,
+      !ruleWritten   ? '⚠ `landing_ownership_rule` not written — add `crm.schemas.companies.write` scope to your HubSpot private app.' : null
+    ].filter(Boolean).join('\n');
 
     await respond({
       replace_original: true,
@@ -579,10 +592,10 @@ app.action('check_assign_other', async ({ body, ack, respond }) => {
         section(
           `*Company:* <${fix.link}|${fix.companyName}>\n` +
           `*Assigned to:* *${targetRep}*\n` +
-          `*Rule written:* \`${fix.rule}\`\n` +
-          `*By:* ${body.user?.name || 'Unknown'} on ${today}` +
-          locationNote
-        )
+          (ruleWritten ? `*Rule written:* \`${fix.rule}\`\n` : '') +
+          `*By:* ${body.user?.name || 'Unknown'} on ${today}`
+        ),
+        ...(notes ? [section(notes)] : [])
       ]
     });
   } catch (err) {
@@ -828,8 +841,12 @@ app.action('fix_approve', async ({ body, ack, respond }) => {
   const newOwnerId = repOwnerIds[targetRep] || null;
 
   try {
-    const update = { landing_ownership_rule: rule };
-    if (newOwnerId) update.hubspot_owner_id = newOwnerId;
+    let ruleWritten = true;
+    try { await ensureOwnershipRuleProperty(); } catch { ruleWritten = false; }
+
+    const update = {};
+    if (ruleWritten) update.landing_ownership_rule = rule;
+    if (newOwnerId)  update.hubspot_owner_id        = newOwnerId;
     await updateCompany(companyId, update);
 
     appendLog({
@@ -842,10 +859,15 @@ app.action('fix_approve', async ({ body, ack, respond }) => {
       to:        targetRep,
       newOwnerId,
       hsRule:    rule,
+      ruleWritten,
       slackUser: body.user?.name || body.user?.id
     });
 
     pendingFixes.delete(fixKey);
+
+    const ruleNote = !ruleWritten
+      ? '\n⚠ `landing_ownership_rule` not written — add `crm.schemas.companies.write` scope to your HubSpot private app.'
+      : '';
 
     await respond({
       replace_original: true,
@@ -854,8 +876,9 @@ app.action('fix_approve', async ({ body, ack, respond }) => {
         section(
           `*Company:* <${link}|${companyName}>\n` +
           `*Assigned to:* *${targetRep}*\n` +
-          `*Rule written:* \`${rule}\`\n` +
-          `*Updated by:* ${body.user?.name || 'Unknown'} on ${today}`
+          (ruleWritten ? `*Rule written:* \`${rule}\`\n` : '') +
+          `*Updated by:* ${body.user?.name || 'Unknown'} on ${today}` +
+          ruleNote
         )
       ]
     });
