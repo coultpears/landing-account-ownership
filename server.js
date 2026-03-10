@@ -93,37 +93,27 @@ if (process.env.SLACK_APP_TOKEN) {
   });
 
   app = new App({
-    token:                process.env.SLACK_BOT_TOKEN,
-    receiver,
-    // Required for Cloud Run: keeps the HTTP connection open until ack() is
-    // called inside the handler, which prevents Cloud Run from throttling the
-    // CPU before the handler's async work (respond() calls, HubSpot API) runs.
-    processBeforeResponse: true
+    token:    process.env.SLACK_BOT_TOKEN,
+    receiver
   });
 }
 
 // ---------------------------------------------------------------------------
-// Slack user → rep mapping
+// Slack user → rep mapping (loaded from data/config.json → slackToRep)
 // ---------------------------------------------------------------------------
 
 /**
- * Map Slack user IDs or lowercase usernames to rep names.
- * Keys should be Slack user IDs ("U012AB3CD") for reliability.
+ * Returns the rep name for a given Slack user, or null if unmapped.
+ * Mapping is maintained in data/config.json under "slackToRep":
+ *   { "U012AB3CD": "Scout Bishop", "U034EF5GH": "Wells Davis" }
  *
- * To find a user's Slack ID:
- *   Right-click their name → View Profile → ⋮ menu → Copy member ID
- *
- * Example:
- *   'U012AB3CD': 'Scout Bishop',
- *   'U034EF5GH': 'Wells Davis',
+ * To find a user's Slack ID: right-click their profile → Copy member ID.
+ * No code deploy needed — just edit config.json and restart.
  */
-const SLACK_TO_REP = {
-  // Add entries here after onboarding the team to the Slack app
-};
-
 function slackUserToRep(userId, userName, realName) {
-  if (SLACK_TO_REP[userId])   return SLACK_TO_REP[userId];
-  if (SLACK_TO_REP[userName]) return SLACK_TO_REP[userName];
+  const { slackToRep = {} } = loadConfig();
+  if (slackToRep[userId])   return slackToRep[userId];
+  if (slackToRep[userName]) return slackToRep[userName];
   if (realName) {
     const norm = s => s.toLowerCase().replace(/[^a-z\s]/g, '').trim();
     const rn   = norm(realName);
@@ -683,11 +673,11 @@ app.command('/audit-me', async ({ command, ack, respond, client }) => {
 
   if (!repName) {
     await respond(
-      `❌ Your Slack account isn't mapped to a rep.\n\n` +
-      `Add \`'${command.user_id}': '<Rep Name>'\` to \`SLACK_TO_REP\` in \`server.js\`.\n` +
-      `Known reps: ${KNOWN_REPS.join(', ')}`
+      `❌ Your Slack account isn't mapped to a rep yet.\n\n` +
+      `Send your Slack user ID to *Matt Pears* and he'll add you.\n` +
+      `Your user ID: \`${command.user_id}\``
     );
-    log('respond_sent', { cmd: '/audit-me', ms: Date.now() - t0, result: 'no_rep_mapping' });
+    log('respond_sent', { cmd: '/audit-me', ms: Date.now() - t0, result: 'no_rep_mapping', userId: command.user_id });
     return;
   }
 

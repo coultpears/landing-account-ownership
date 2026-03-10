@@ -1,6 +1,12 @@
 {
   "_comment": "Edit excludedCompanies / excludedDomains to suppress non-prospect records from conflict reports. Names are matched case-insensitively. Partial matches work (e.g. 'Zoom' matches 'Zoom Video Communications'). Add new entries here — no code changes needed.",
 
+  "_comment_slackToRep": "Map Slack user IDs to rep names for /audit-me. Keys are Slack user IDs (right-click profile → Copy member ID). Values must match rep names exactly as they appear in assignments.json.",
+
+  "slackToRep": {
+    "U0AF4FK34C8": "Matt Pears"
+  },
+
   "_comment_repOwnerIds": "HubSpot owner IDs for reps that can be auto-assigned via the audit reassignment prompt. Add new reps here using their HubSpot owner ID (Settings → Users & Teams → click user → copy ID from URL).",
 
   "repOwnerIds": {
