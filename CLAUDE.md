@@ -1,6 +1,6 @@
 # landing-account-ownership
 
-Phase 1 ownership conflict resolution engine for Class A/B Conventional Multifamily account coverage.
+Ownership conflict resolution engine + HubSpot audit tool for Class A/B Conventional Multifamily account coverage.
 
 ## Purpose
 
@@ -16,11 +16,18 @@ landing-account-ownership/
 │   ├── owners.json       Top 50 owner list with attributes + aliases
 │   ├── assignments.json  Owner-level and state-based regional rep assignments
 │   ├── markets.json      Top 20 MSA definitions with keyword lists
-│   └── log.json          Append-only audit log of every resolution check
+│   ├── config.json       Exclusion list + qualifying/non-MF industry lists
+│   ├── cache.json        Web-search enrichment cache (auto-maintained)
+│   └── log.json          Append-only audit log (resolve() checks + FIX writes)
 ├── src/
 │   ├── engine.js         Core conflict resolution logic
 │   ├── qualify.js        Lead qualification gate (Class A/B Conventional MF)
-│   └── cli.js            CLI interface
+│   ├── search.js         Web enrichment via DuckDuckGo (owner HQ, property class, location)
+│   ├── hubspot.js        HubSpot API wrapper (read + PATCH companies, deals, engagements)
+│   ├── audit.js          HubSpot conflict detection (audit / audit-all logic)
+│   └── cli.js            CLI interface (check, audit, audit-all, fix)
+├── .env                  Local secrets — HUBSPOT_TOKEN, HUBSPOT_PORTAL_ID (not committed)
+├── .env.example          Template for .env setup
 └── package.json
 ```
 
@@ -127,7 +134,15 @@ Two sections:
 Top 20 MSA definitions. Each entry has `id`, `name`, `states[]`, and `keywords[]`. Used exclusively for Xavier's Tier 2 eligibility check.
 
 ### `data/log.json`
-Append-only. Every `resolve()` call writes: timestamp, rule triggered, owner query, matched owner, market, lease-up flag, assigned rep, conflict flag, warnings.
+Append-only. Every `resolve()` call writes: timestamp, rule triggered, owner query, matched owner, market, lease-up flag, assigned rep, conflict flag, warnings. The `fix` command also appends entries with `rule: "FIX"` containing before/after field values and source note.
+
+### `data/config.json`
+Two runtime-editable lists:
+- `excludedCompanies` / `excludedDomains` — company names (partial match) and domains to suppress from conflict reports (vendors, tools, internal records)
+- `qualifyingIndustries` / `nonMFIndustries` — HubSpot industry values used to assign `● MF`, `● Unverified`, or `● Non-MF` badges to each conflict
+
+### `data/cache.json`
+Auto-maintained. Web enrichment results are stored here keyed by normalized query string. On repeat lookups the CLI uses cached values with no web request. Remove entries manually if stale.
 
 ---
 
@@ -206,11 +221,12 @@ npm run check -- "AvalonBay" --market "Houston TX"
 node src/cli.js check "Some Owner" --class "Class C"
 ```
 
-### CLI Flags
+### CLI Flags (`check` command)
 
 | Flag | Description |
 |------|-------------|
-| `--market <market>` | Market string, e.g. `"Dallas TX"`, `"Charlotte NC"` |
+| `--market <market>` | Property location, e.g. `"Dallas TX"`, `"Charlotte NC"` |
+| `--hq <location>` | Owner HQ state, e.g. `"VA"`, `"Virginia"`, `"McLean VA"` — drives Tier 4 |
 | `--lease-up` | Flag the property as a lease-up |
 | `--class <class>` | Property class: `"Class A"` or `"Class B"` |
 | `--type <type>` | Property type, e.g. `"Conventional MF"` |
@@ -225,7 +241,7 @@ Owner names are matched against canonical names **and all aliases** using a thre
 2. **Substring match** (either direction) — 90% confidence
 3. **Word-level overlap** — proportional score (0–65%)
 
-Minimum threshold: **30% confidence**. Below threshold = no match, engine continues to next tier.
+Minimum threshold: **40% confidence**. Below threshold = no match, engine continues to next tier.
 
 To add an alias: edit the `aliases` array in `data/owners.json` (Top 50) or `data/assignments.json` (owner assignments).
 
@@ -248,7 +264,11 @@ In `src/engine.js`, change the string `'Xavier'` in the Tier 2 block.
 ### Add a Top 20 MSA
 Append to `top20MSAs` in `data/markets.json` with `id`, `name`, `states[]`, and `keywords[]`. Use specific city/neighborhood names as keywords — avoid short abbreviations that could match inside other words.
 
----
+### Suppress a company from conflict reports
+Add its name (partial match, case-insensitive) to `excludedCompanies` in `data/config.json`, or its domain to `excludedDomains`.
+
+### Add a qualifying or non-MF industry
+Edit `qualifyingIndustries` or `nonMFIndustries` in `data/config.json`. Values must match HubSpot's industry field exactly (check with `node -e "require('./src/hubspot').getCompany('ID').then(c=>console.log(c.properties.industry))"`).
 
 ---
 
