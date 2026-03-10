@@ -216,6 +216,39 @@ async function getAssociatedCompanyIds(fromType, fromIds) {
 }
 
 // ---------------------------------------------------------------------------
+// Public: Batch associations — generic fromType → toType
+// Returns { objectId: [toObjectId, ...] }
+// ---------------------------------------------------------------------------
+
+async function getAssociatedIds(fromType, toType, fromIds) {
+  if (!fromIds.length) return {};
+
+  const result    = {};
+  const chunkSize = 100;
+
+  for (let i = 0; i < fromIds.length; i += chunkSize) {
+    const chunk = fromIds.slice(i, i + chunkSize);
+    try {
+      const res = await apiRequest(
+        'POST',
+        `/crm/v4/associations/${fromType}/${toType}/batch/read`,
+        { inputs: chunk.map(id => ({ id: String(id) })) }
+      );
+      for (const item of (res.results || [])) {
+        if (item.from?.id && item.to?.length) {
+          result[item.from.id] = item.to.map(t => String(t.toObjectId));
+        }
+      }
+    } catch {
+      // Non-fatal
+    }
+    if (i + chunkSize < fromIds.length) await sleep(200);
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Public: Batch-read company details
 // ---------------------------------------------------------------------------
 
@@ -318,6 +351,41 @@ async function ensureOwnershipRuleProperty() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Public: Deal pipeline stages — returns { stageId: label } map
+// ---------------------------------------------------------------------------
+
+let _stageCache = null;
+let _stageOrderCache = null;
+
+async function getDealStageLabels() {
+  if (_stageCache) return _stageCache;
+  await _fetchPipelineData();
+  return _stageCache;
+}
+
+async function getDealStageOrder() {
+  if (_stageOrderCache) return _stageOrderCache;
+  await _fetchPipelineData();
+  return _stageOrderCache;
+}
+
+async function _fetchPipelineData() {
+  const data = await apiRequest('GET', '/crm/v3/pipelines/deals');
+  const labels = {};
+  const order  = {};
+  let idx = 0;
+  for (const pipeline of (data.results || [])) {
+    const stages = (pipeline.stages || []).sort((a, b) => (a.displayOrder || 0) - (b.displayOrder || 0));
+    for (const stage of stages) {
+      labels[stage.id] = stage.label;
+      order[stage.label] = idx++;
+    }
+  }
+  _stageCache = labels;
+  _stageOrderCache = order;
+}
+
 module.exports = {
   getOwners,
   getPortalId,
@@ -328,5 +396,8 @@ module.exports = {
   getCompany,
   updateCompany,
   ensureOwnershipRuleProperty,
-  searchCompanyByName
+  searchCompanyByName,
+  getDealStageLabels,
+  getDealStageOrder,
+  getAssociatedIds
 };

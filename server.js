@@ -65,6 +65,11 @@ const {
 // at the HTTP layer prevents the resulting retry storm.
 // ---------------------------------------------------------------------------
 
+// Prevent crashes from transient Socket Mode reconnection errors
+process.on('unhandledRejection', (err) => {
+  console.error('[unhandledRejection]', err.message || err);
+});
+
 let app;
 let httpReceiver = null; // set in HTTP mode; used to register /health
 
@@ -194,7 +199,7 @@ const RULE_LABELS = {
 
 function humanizeDays(n) {
   if (n === null || n === undefined) return '—';
-  if (n === 0)  return 'today';
+  if (n <= 0)   return 'today';
   if (n === 1)  return 'yesterday';
   if (n < 7)    return `${n}d ago`;
   if (n < 30)   return `${Math.round(n / 7)}w ago`;
@@ -390,12 +395,12 @@ app.command('/check', async ({ command, ack, respond }) => {
 
     // ── Step 2: Initial resolve ─────────────────────────────────────────────
     let result = resolve(input);
-
     // ── Step 3: HubSpot record lookup — city/state/owner before web search ──
     let companyId       = null;
     let hubspotLink     = null;
     let currentOwnerName = null;
     let hsCity = null, hsState = null;  // what HubSpot actually has
+    let hsDomain = null;               // domain from HubSpot (for better web search)
     let webCity = null, webState = null; // what web search finds (only if HS missing)
     let enrichmentNote  = null;
 
@@ -415,6 +420,7 @@ app.command('/check', async ({ command, ack, respond }) => {
 
         hsCity  = p.city  || null;
         hsState = p.state || null;
+        hsDomain = p.domain || null;
 
         // Current HubSpot owner
         if (p.hubspot_owner_id) {
@@ -435,12 +441,14 @@ app.command('/check', async ({ command, ack, respond }) => {
       }
     } catch { /* non-fatal — continue without HubSpot data */ }
 
-    // ── Step 4: Web search fallback — fires when still missing location ───────
-    // Runs if (a) UNASSIGNED with no location, or (b) HubSpot record exists but
-    // is missing city/state (so we can offer to fill it in).
-    if (!input.market && !input.ownerHQ) {
+    // ── Step 4: Web search fallback — fires when resolution failed or HS missing location
+    const needsWebSearch =
+      (result.rule === 'UNASSIGNED') ||
+      (companyId && (!hsCity || !hsState));
+
+    if (needsWebSearch) {
       try {
-        const found = await enrichCompanyLocation(input.ownerName);
+        const found = await enrichCompanyLocation(input.ownerName, hsDomain);
         if (found.city || found.state) {
           webCity  = found.city  || null;
           webState = found.state || null;
@@ -752,50 +760,91 @@ app.action('check_enrich_no', async ({ body, ack, respond }) => {
 // /audit-me — run audit for the calling user's rep
 // ---------------------------------------------------------------------------
 
-app.command('/audit-me', async ({ command, ack, respond, client }) => {
+app.command('/audit', async ({ command, ack, respond, client }) => {
   const t0 = Date.now();
-  log('cmd_received', { cmd: '/audit-me', user: command.user_name });
+  const text = (command.text || '').trim();
+  log('cmd_received', { cmd: '/audit', user: command.user_name, text });
 
   await ack();
-  log('ack_sent', { cmd: '/audit-me', ackMs: Date.now() - t0 });
+  log('ack_sent', { cmd: '/audit', ackMs: Date.now() - t0 });
 
-  // Resolve Slack user → rep name
+  // Parse optional days argument: "/audit scout 30", "/audit scout last 30 days", "/audit 30"
+  let daysBack = 90;
+  const daysMatch = text.match(/(?:\b(?:last|past)\s+)?(\d+)\s*(?:days?)?\s*$/i);
+  const nameText = daysMatch ? text.slice(0, daysMatch.index).trim() : text;
+  if (daysMatch) daysBack = Math.max(1, Math.min(365, parseInt(daysMatch[1], 10)));
+
+  // If no name provided, resolve from Slack user identity
   let repName = null;
-  try {
-    const info  = await client.users.info({ user: command.user_id });
-    const real  = info.user?.profile?.real_name || info.user?.real_name || '';
-    repName     = slackUserToRep(command.user_id, command.user_name, real);
-  } catch {
-    repName = slackUserToRep(command.user_id, command.user_name, null);
-  }
-
-  if (!repName) {
-    await respond(
-      `❌ Your Slack account isn't mapped to a rep yet.\n\n` +
-      `Send your Slack user ID to *Matt Pears* and he'll add you.\n` +
-      `Your user ID: \`${command.user_id}\``
-    );
-    log('respond_sent', { cmd: '/audit-me', ms: Date.now() - t0, result: 'no_rep_mapping', userId: command.user_id });
-    return;
+  if (nameText) {
+    const needle = nameText.toLowerCase();
+    repName = KNOWN_REPS.find(r => r.toLowerCase() === needle)
+      || KNOWN_REPS.find(r => r.toLowerCase().includes(needle));
+    if (!repName) {
+      await respond(
+        `❌ No rep found matching "${nameText}".\n\n` +
+        '*Available reps:* ' + KNOWN_REPS.join(', ')
+      );
+      log('respond_sent', { cmd: '/audit', ms: Date.now() - t0, result: 'no_match', query: nameText });
+      return;
+    }
+  } else {
+    try {
+      const info  = await client.users.info({ user: command.user_id });
+      const real  = info.user?.profile?.real_name || info.user?.real_name || '';
+      repName     = slackUserToRep(command.user_id, command.user_name, real);
+    } catch {
+      repName = slackUserToRep(command.user_id, command.user_name, null);
+    }
+    if (!repName) {
+      await respond(
+        `❌ Your Slack account isn't mapped to a rep yet.\n\n` +
+        `Type \`/audit [rep name]\` to audit a specific rep, or send your Slack user ID to *Matt Pears* to get mapped.\n` +
+        `Your user ID: \`${command.user_id}\`\n\n` +
+        '*Available reps:* ' + KNOWN_REPS.join(', ')
+      );
+      log('respond_sent', { cmd: '/audit', ms: Date.now() - t0, result: 'no_rep_mapping', userId: command.user_id });
+      return;
+    }
   }
 
   await respond({ response_type: 'ephemeral', text: `_Running audit for *${repName}*… (this may take 30–60 seconds)_` });
-  log('respond_working', { cmd: '/audit-me', ms: Date.now() - t0, rep: repName });
+  log('respond_working', { cmd: '/audit', ms: Date.now() - t0, rep: repName });
 
   try {
     await ensureOwnershipRuleProperty();
-    const result = await auditRep(repName, { daysBack: 90, qualifiedOnly: false });
+    const result = await auditRep(repName, { daysBack, qualifiedOnly: false });
 
     if (result.error) {
-      log('error', { cmd: '/audit-me', ms: Date.now() - t0, rep: repName, error: result.error });
+      log('error', { cmd: '/audit', ms: Date.now() - t0, rep: repName, error: result.error });
       await respond({ text: `❌ ${result.error}`, replace_original: true });
       return;
     }
 
-    const { conflicts, companies, excluded, hubspotOwner, daysBack } = result;
+    const { conflicts, companies, excluded, hubspotOwner, daysBack: resultDays, summary, stageAverages, stageOrder } = result;
     const ownerLabel = hubspotOwner
       ? `${hubspotOwner.firstName} ${hubspotOwner.lastName}`
       : repName;
+
+    // ── Activity summary line ──────────────────────────────────────────────
+    const actParts = [];
+    if (summary.deals)    actParts.push(`${summary.deals} deal${summary.deals !== 1 ? 's' : ''}`);
+    if (summary.emails)   actParts.push(`${summary.emails} email${summary.emails !== 1 ? 's' : ''}`);
+    if (summary.calls)    actParts.push(`${summary.calls} call${summary.calls !== 1 ? 's' : ''}`);
+    if (summary.meetings) actParts.push(`${summary.meetings} meeting${summary.meetings !== 1 ? 's' : ''}`);
+    if (summary.tasks)    actParts.push(`${summary.tasks} task${summary.tasks !== 1 ? 's' : ''}`);
+    const actLine = actParts.length > 0
+      ? actParts.join(', ') + ` — *${summary.totalActivities} total activities*`
+      : 'No activity found';
+
+    // ── Per-stage avg touchpoints (sorted by pipeline order) ───────────────
+    const stageLines = Object.entries(stageAverages || {})
+      .sort((a, b) => {
+        const oA = stageOrder[a[0]] ?? 999;
+        const oB = stageOrder[b[0]] ?? 999;
+        return oA - oB;
+      })
+      .map(([stage, s]) => `  • ${stage}: ${s.deals} deal${s.deals !== 1 ? 's' : ''}, ~${s.avgTouchpoints} touches/deal`);
 
     const blocks = [
       header(`📊 Audit — ${ownerLabel}`),
@@ -803,14 +852,29 @@ app.command('/audit-me', async ({ command, ack, respond, client }) => {
         `*Lookback:* Last ${daysBack} days\n` +
         `*Companies hit:* ${companies.length}` + (excluded > 0 ? ` _(${excluded} vendors excluded)_` : '') + '\n' +
         `*Conflicts:* ${conflicts.length > 0 ? `*${conflicts.length}* ⚠` : '✅ 0'}`
-      )
+      ),
+      divider(),
+      section(`*Activity Overview*\n${actLine}`),
     ];
 
+    if (stageLines.length > 0) {
+      blocks.push(section(`*Avg Touchpoints by Deal Stage*\n${stageLines.join('\n')}`));
+    }
+
+    blocks.push(divider());
+
+    const config = loadConfig();
+
     if (conflicts.length === 0) {
-      blocks.push(section('✅ No conflicts — you are correctly assigned on all active accounts.'));
+      blocks.push(section(`✅ No conflicts — ${repName} is correctly assigned on all active accounts.`));
     } else {
-      blocks.push(divider());
-      for (const c of conflicts) {
+      // Slack limits messages to 50 blocks — each conflict uses 2 blocks (section + actions)
+      // Header/summary uses ~7 blocks, so we can show ~14 conflicts with inline buttons
+      const MAX_SHOWN = 14;
+      const shown = conflicts.slice(0, MAX_SHOWN);
+      const remaining = conflicts.length - shown.length;
+
+      for (const c of shown) {
         const recency   = humanizeDays(c.daysSince);
         const badge     = qualBadge(c.qualStatus);
         const ruleLabel = RULE_LABELS[c.rule] || c.rule;
@@ -821,16 +885,53 @@ app.command('/audit-me', async ({ command, ack, respond, client }) => {
           `*Working it:* ${c.workingRep}   →   *Should be:* *${c.expectedRep}*\n` +
           `*Rule:* ${ruleLabel}`
         ));
-        blocks.push(divider());
+
+        // Inline assign button for this conflict
+        const fixKey = makeFixKey();
+        setPendingFix(fixKey, {
+          companyId:    c.companyId,
+          companyName:  c.companyName,
+          link:         c.link,
+          suggestedRep: c.expectedRep,
+          rule:         c.rule,
+          workingRep:   c.workingRep,
+          repOwnerIds:  config.repOwnerIds || {},
+        });
+        const repOptions = buildRepOptions(config.repOwnerIds || {});
+        const actionElements = [
+          {
+            type:      'button',
+            text:      { type: 'plain_text', text: `✅ Assign → ${c.expectedRep}`, emoji: true },
+            style:     'primary',
+            action_id: 'check_assign_suggested',
+            value:     fixKey
+          }
+        ];
+        if (repOptions.length > 0) {
+          actionElements.push({
+            type:        'static_select',
+            placeholder: { type: 'plain_text', text: 'Assign to someone else…' },
+            action_id:   'check_assign_other',
+            options:     repOptions
+          });
+        }
+        blocks.push({
+          type: 'actions',
+          block_id: fixKey,
+          elements: actionElements
+        });
       }
-      blocks.push(section('_Use `/fix [HubSpot record ID]` to reassign individual records._'));
+      if (remaining > 0) {
+        blocks.push(divider());
+        blocks.push(section(`_…and ${remaining} more conflicts not shown. Use the CLI for the full list:_\n\`node src/cli.js audit "${repName}"\``));
+      }
     }
 
-    log('respond_sent', { cmd: '/audit-me', ms: Date.now() - t0, rep: repName, companies: companies.length, conflicts: conflicts.length });
+    log('respond_sent', { cmd: '/audit', ms: Date.now() - t0, rep: repName, companies: companies.length, conflicts: conflicts.length });
     await respond({ blocks, replace_original: true });
 
   } catch (err) {
-    log('error', { cmd: '/audit-me', ms: Date.now() - t0, rep: repName, error: err.message });
+    log('error', { cmd: '/audit', ms: Date.now() - t0, rep: repName, error: err.message });
     await respond({ text: `❌ Audit failed: ${err.message}`, replace_original: true });
   }
 });

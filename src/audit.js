@@ -23,7 +23,10 @@ const {
   getDealsByOwner,
   getEngagementsByOwner,
   getAssociatedCompanyIds,
-  getCompaniesBatch
+  getCompaniesBatch,
+  getDealStageLabels,
+  getDealStageOrder,
+  getAssociatedIds
 } = require('./hubspot');
 
 const { resolve } = require('./engine');
@@ -196,6 +199,13 @@ async function auditRep(repName, {
   const activityCount = {}; // companyId -> number
   const lastActivity  = {}; // companyId -> ms timestamp
 
+  // High-level activity summary
+  const summary = { deals: 0, calls: 0, emails: 0, meetings: 0, tasks: 0, totalActivities: 0 };
+  // Deal stage tracking: dealId -> { stage }
+  const dealDetails = {};
+  // Per-deal activity tracking (from direct associations): dealId -> { calls, emails, meetings, tasks }
+  const dealActivityCounts = {};
+
   const tally = (ids, ts = 0) => {
     for (const id of ids) {
       activityCount[id] = (activityCount[id] || 0) + 1;
@@ -208,23 +218,29 @@ async function auditRep(repName, {
   // ── Deals ────────────────────────────────────────────────────────────────
   log(`  Fetching deals...`);
   const deals = await getDealsByOwner(ownerId, daysBack);
+  summary.deals = deals.length;
   log(`    ${deals.length} deal${deals.length !== 1 ? 's' : ''}`);
 
   if (deals.length) {
     const dealMap = await getAssociatedCompanyIds('deals', deals.map(d => d.id));
-    // Build timestamp map from deal modified dates
     const tsByDeal = Object.fromEntries(
       deals.map(d => [d.id, parseTs(d.properties?.hs_lastmodifieddate)])
     );
+    for (const deal of deals) {
+      dealDetails[deal.id] = { stage: deal.properties?.dealstage || 'unknown' };
+      dealActivityCounts[deal.id] = { calls: 0, emails: 0, meetings: 0, tasks: 0 };
+    }
     for (const [dealId, companyIds] of Object.entries(dealMap)) {
       tally(companyIds, tsByDeal[dealId] || 0);
     }
   }
 
-  // ── Engagements ───────────────────────────────────────────────────────────
+  // ── Engagements (for company-level conflict detection) ────────────────────
   for (const type of ['calls', 'emails', 'meetings', 'tasks']) {
     log(`  Fetching ${type}...`);
     const engagements = await getEngagementsByOwner(type, ownerId, daysBack);
+    summary[type] = engagements.length;
+    summary.totalActivities += engagements.length;
     log(`    ${engagements.length} ${type}`);
 
     if (engagements.length) {
@@ -236,6 +252,45 @@ async function auditRep(repName, {
         tally(companyIds, tsByEng[engId] || 0);
       }
     }
+  }
+
+  // ── Deal-level touchpoints (direct deal → engagement associations) ──────
+  const dealIds = Object.keys(dealDetails);
+  if (dealIds.length) {
+    log(`  Fetching deal-level activity associations...`);
+    for (const type of ['calls', 'emails', 'meetings', 'tasks']) {
+      const assocMap = await getAssociatedIds('deals', type, dealIds);
+      for (const [dealId, engIds] of Object.entries(assocMap)) {
+        if (dealActivityCounts[dealId]) {
+          dealActivityCounts[dealId][type] = engIds.length;
+        }
+      }
+    }
+  }
+
+  // ── Compute per-stage averages ──────────────────────────────────────────
+  let stageLabels = {};
+  let stageOrder  = {};
+  try {
+    stageLabels = await getDealStageLabels();
+    stageOrder  = await getDealStageOrder();
+  } catch { /* use raw IDs */ }
+
+  const stageStats = {}; // stageLabel -> { dealCount, totalActivities }
+  for (const [dealId, dd] of Object.entries(dealDetails)) {
+    const label = stageLabels[dd.stage] || dd.stage;
+    if (!stageStats[label]) stageStats[label] = { dealCount: 0, totalActivities: 0 };
+    stageStats[label].dealCount++;
+    const dc = dealActivityCounts[dealId] || {};
+    stageStats[label].totalActivities += (dc.calls || 0) + (dc.emails || 0) + (dc.meetings || 0) + (dc.tasks || 0);
+  }
+  // Convert to avg touchpoints per deal
+  const stageAverages = {};
+  for (const [stage, s] of Object.entries(stageStats)) {
+    stageAverages[stage] = {
+      deals: s.dealCount,
+      avgTouchpoints: s.dealCount > 0 ? Math.round((s.totalActivities / s.dealCount) * 10) / 10 : 0
+    };
   }
 
   // ── Company details ───────────────────────────────────────────────────────
@@ -305,7 +360,8 @@ async function auditRep(repName, {
 
   return {
     rep: repName, hubspotOwner: owner, daysBack,
-    companies: checked, conflicts, excluded
+    companies: checked, conflicts, excluded,
+    summary, stageAverages, stageOrder
   };
 }
 

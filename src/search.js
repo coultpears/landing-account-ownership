@@ -40,6 +40,29 @@ async function ddgSearch(query) {
   return JSON.parse(raw);
 }
 
+/**
+ * Scrape DuckDuckGo HTML search results as a fallback when the Instant Answer
+ * API returns nothing. Returns raw text from result snippets.
+ */
+/**
+ * Scrape a company's own website (contact/about pages) to find their address.
+ * Returns plain text from the page or null.
+ */
+async function scrapeCompanyWebsite(domain) {
+  const paths = ['/contact-us', '/contact', '/about-us', '/about', '/'];
+  for (const p of paths) {
+    try {
+      const raw = await httpGet(`https://www.${domain}${p}`);
+      const plain = raw.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+      // Return full text so extractLocation can search the entire page
+      if (/[A-Z][a-zA-Z\s]{2,20},?\s+[A-Z]{2}\b/.test(plain)) {
+        return plain;
+      }
+    } catch { /* try next path */ }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Parsers
 // ---------------------------------------------------------------------------
@@ -51,9 +74,18 @@ function extractLocation(text) {
   // Match patterns like "New Haven, CT" or "New Haven CT 06511"
   const pattern = /\b([A-Z][a-zA-Z\s]{2,20}),?\s+([A-Z]{2})\b(?:\s+\d{5})?/g;
   const skip = new Set(['United States', 'New York', 'Los Angeles', 'San Francisco']);
+  const US_STATES = new Set([
+    'AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA',
+    'KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ',
+    'NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT',
+    'VA','WA','WV','WI','WY','DC'
+  ]);
   for (const m of text.matchAll(pattern)) {
     const city = m[1].trim();
     const state = m[2];
+    // Skip non-state codes, all-caps words in city (nav elements like "CONTACT US"), and known junk
+    if (!US_STATES.has(state)) continue;
+    if (/\b[A-Z]{2,}\b/.test(city)) continue;  // skip entries with ALL-CAPS words
     if (city.split(' ').length <= 4 && !skip.has(city + ' ' + state)) {
       return `${city} ${state}`;
     }
@@ -199,10 +231,19 @@ function extractStreetAddress(text) {
  * In Claude Code sessions, prefer using the built-in WebSearch tool for more
  * reliable results before calling this function.
  */
-async function enrichCompanyLocation(companyName) {
+async function enrichCompanyLocation(companyName, domain) {
   try {
-    const r    = await ddgSearch(`${companyName} company headquarters address location`);
-    const text = collapseText(r);
+    const searchStr = `${companyName} company headquarters address location`;
+
+    // Try Instant Answer API first
+    const r    = await ddgSearch(searchStr);
+    let text = collapseText(r);
+
+    // Fallback: scrape company's own website if API returned nothing and we have a domain
+    if (!text && domain) {
+      text = await scrapeCompanyWebsite(domain);
+    }
+
     if (!text) return { city: null, state: null, address: null };
 
     const location = extractLocation(text);
