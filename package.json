@@ -1,16 +1,20 @@
 {
   "name": "landing-account-ownership",
   "version": "1.0.0",
-  "description": "Phase 1 ownership conflict resolution engine for Class A/B Conventional MF account coverage",
+  "description": "Ownership conflict resolution engine + HubSpot audit tool + Slack bot for Class A/B Conventional MF",
   "main": "src/cli.js",
   "scripts": {
     "check":     "node src/cli.js check",
     "audit":     "node src/cli.js audit",
     "audit-all": "node src/cli.js audit-all",
-    "fix":       "node src/cli.js fix"
+    "fix":       "node src/cli.js fix",
+    "start":     "node server.js"
   },
   "engines": {
-    "node": ">=16"
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@slack/bolt": "^3.21.1"
   },
   "author": "coultpears",
   "license": "UNLICENSED"

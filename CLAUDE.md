@@ -26,7 +26,9 @@ landing-account-ownership/
 │   ├── hubspot.js        HubSpot API wrapper (read + PATCH companies, deals, engagements)
 │   ├── audit.js          HubSpot conflict detection (audit / audit-all logic)
 │   └── cli.js            CLI interface (check, audit, audit-all, fix)
-├── .env                  Local secrets — HUBSPOT_TOKEN, HUBSPOT_PORTAL_ID (not committed)
+├── server.js             Slack bot (Phase 3) — /check, /audit-me, /fix slash commands
+├── Dockerfile            Container image for Cloud Run deployment
+├── .env                  Local secrets — HUBSPOT_TOKEN, SLACK_BOT_TOKEN, etc. (not committed)
 ├── .env.example          Template for .env setup
 └── package.json
 ```
@@ -380,9 +382,115 @@ The audit uses `city` + `state` from the HubSpot company record as the market st
 
 ---
 
+## Phase 3 — Slack Bot
+
+### Overview
+
+A lightweight Slack bot (`server.js`) that exposes the ownership engine, audit pipeline, and fix command as Slack slash commands. Built with Slack Bolt (Node.js). Deploys to Cloud Run or any Node host.
+
+### Slash commands
+
+| Command | Description |
+|---------|-------------|
+| `/check [owner or property name]` | Full ownership resolution: fuzzy match, web enrichment, qualify, resolve. Returns rule, assigned rep, explanation, and HubSpot record link. Flags missing city/state and recommends `/fix`. |
+| `/audit-me` | Runs the 90-day conflict audit for the calling user's rep. Returns conflicts sorted by most-recent activity with company name, HubSpot link, correct owner, rule, and days since last activity. |
+| `/fix [record ID or company name]` | Looks up the HubSpot record, runs resolution, shows current vs correct owner with an **Approve** and **Decline** button. Approve updates `hubspot_owner_id` + writes `landing_ownership_rule`. Decline writes the EXCEPTION note. |
+
+### Setup
+
+#### 1. Create the Slack App
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App** → **From scratch**.
+2. Under **OAuth & Permissions**, add bot token scopes:
+   - `commands` — receive slash commands
+   - `users:read` — look up caller's real name for `/audit-me`
+3. Under **Slash Commands**, create three commands:
+   - `/check` → request URL: `https://your-host/slack/events`
+   - `/audit-me` → same URL
+   - `/fix` → same URL
+4. Under **Interactivity & Shortcuts**, enable interactivity. Set the request URL to `https://your-host/slack/events`.
+5. Install the app to your workspace. Copy the **Bot User OAuth Token** (`xoxb-…`).
+6. Under **Basic Information → App Credentials**, copy the **Signing Secret**.
+
+#### 2. (Optional) Socket Mode for local dev
+
+Socket Mode lets the bot connect without a public URL — ideal during development:
+1. Under **Basic Information → App-Level Tokens**, generate a token with scope `connections:write`. Copy the `xapp-…` token.
+2. Set `SLACK_APP_TOKEN=xapp-…` in `.env`. The server auto-detects this and uses Socket Mode.
+
+#### 3. Environment variables
+
+Copy `.env.example` to `.env` and fill in:
+
+```
+SLACK_BOT_TOKEN=xoxb-…
+SLACK_SIGNING_SECRET=…
+SLACK_APP_TOKEN=          # optional, Socket Mode only
+PORT=3000                 # Cloud Run sets this automatically
+```
+
+#### 4. Map Slack users to reps
+
+Open `server.js` and fill in the `SLACK_TO_REP` object:
+
+```js
+const SLACK_TO_REP = {
+  'U012AB3CD': 'Scout Bishop',    // Slack user ID → rep name
+  'U034EF5GH': 'Wells Davis',
+  // …
+};
+```
+
+To find a user's Slack ID: right-click their name → **View Profile** → **⋮** → **Copy member ID**.
+
+#### 5. Install and run
+
+```bash
+npm install
+node server.js
+# or: npm start
+```
+
+### Cloud Run deployment
+
+```bash
+# Build and push the container
+gcloud builds submit --tag gcr.io/PROJECT_ID/landing-ownership
+
+# Deploy
+gcloud run deploy landing-ownership \
+  --image gcr.io/PROJECT_ID/landing-ownership \
+  --platform managed \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars SLACK_BOT_TOKEN=xoxb-…,SLACK_SIGNING_SECRET=…,HUBSPOT_TOKEN=…,HUBSPOT_PORTAL_ID=…
+```
+
+After deployment, copy the service URL and set it as the request URL for your slash commands and interactivity endpoint in the Slack app settings.
+
+**Notes:**
+- Do **not** set `SLACK_APP_TOKEN` on Cloud Run — Socket Mode is for local dev only.
+- Cloud Run injects `PORT` automatically.
+- The `data/cache.json` and `data/log.json` files are written inside the container. For persistence across deployments, mount a Cloud Storage bucket or use a managed database.
+
+### Source files
+
+| File | Purpose |
+|------|---------|
+| `server.js` | Slack bot — slash commands, button action handlers, enrichment + resolution glue |
+| `src/engine.js` | Resolution engine (shared with CLI) |
+| `src/audit.js` | Audit logic (shared with CLI) |
+| `src/hubspot.js` | HubSpot API wrapper — now also exports `searchCompanyByName` |
+| `Dockerfile` | Container image for Cloud Run |
+
+### Pending fix state
+
+`/fix` stores context in an in-memory `pendingFixes` Map keyed by a unique ID embedded in the button values. Entries expire after 30 minutes. If a user clicks an expired button, the bot asks them to run `/fix` again.
+
+---
+
 ## Phase 2 Ideas (remaining)
 
-- REST API wrapper around `engine.js`
-- Conflict escalation workflow (flag for manager review, Slack notification)
+- Conflict escalation workflow (flag for manager review)
 - Confidence threshold tuning per rule tier
 - Web UI for checking ownership without CLI

@@ -256,6 +256,20 @@ async function updateCompany(companyId, properties) {
 }
 
 // ---------------------------------------------------------------------------
+// Public: Search companies by name (used by Slack bot /check and /fix)
+// ---------------------------------------------------------------------------
+
+async function searchCompanyByName(name, limit = 5) {
+  const results = await searchAll(
+    'companies',
+    [{ filters: [{ propertyName: 'name', operator: 'CONTAINS_TOKEN', value: name }] }],
+    ['name', 'city', 'state', 'domain', 'industry', 'hubspot_owner_id'],
+    limit
+  );
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // Public: Ensure the landing_ownership_rule custom property exists
 // Call once before writing to landing_ownership_rule. Safe to call repeatedly —
 // a 409 (already exists) is silently swallowed.
@@ -285,5 +299,6 @@ module.exports = {
   getCompaniesBatch,
   getCompany,
   updateCompany,
-  ensureOwnershipRuleProperty
+  ensureOwnershipRuleProperty,
+  searchCompanyByName
 };
