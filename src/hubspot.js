@@ -259,14 +259,42 @@ async function updateCompany(companyId, properties) {
 // Public: Search companies by name (used by Slack bot /check and /fix)
 // ---------------------------------------------------------------------------
 
+const COMPANY_SUFFIXES = /\b(construction|group|capital|partners|llc|inc|corp|corporation|properties|management|realty|investments|residential|ventures|holdings|enterprises|company|co|ltd)\b/gi;
+
 async function searchCompanyByName(name, limit = 5) {
-  const results = await searchAll(
+  const props = ['name', 'city', 'state', 'domain', 'industry', 'hubspot_owner_id'];
+
+  // 1. Try exact query
+  let results = await searchAll(
     'companies',
     [{ filters: [{ propertyName: 'name', operator: 'CONTAINS_TOKEN', value: name }] }],
-    ['name', 'city', 'state', 'domain', 'industry', 'hubspot_owner_id'],
-    limit
+    props, limit
   );
-  return results;
+  if (results.length) return results;
+
+  // 2. Try with common suffixes stripped
+  const stripped = name.replace(COMPANY_SUFFIXES, '').replace(/\s+/g, ' ').trim();
+  if (stripped && stripped !== name) {
+    results = await searchAll(
+      'companies',
+      [{ filters: [{ propertyName: 'name', operator: 'CONTAINS_TOKEN', value: stripped }] }],
+      props, limit
+    );
+    if (results.length) return results;
+  }
+
+  // 3. Try individual words (4+ chars) — return first set of hits
+  const words = stripped.split(/\s+/).filter(w => w.length >= 4);
+  for (const word of words) {
+    results = await searchAll(
+      'companies',
+      [{ filters: [{ propertyName: 'name', operator: 'CONTAINS_TOKEN', value: word }] }],
+      props, limit
+    );
+    if (results.length) return results;
+  }
+
+  return [];
 }
 
 // ---------------------------------------------------------------------------

@@ -491,11 +491,20 @@ app.command('/check', async ({ command, ack, respond }) => {
       currentOwnerName    ? `*Current HubSpot owner:* ${currentOwnerName}` : null
     ].filter(Boolean).join('\n');
 
-    const statusLine = result.rule === 'UNASSIGNED'
-      ? '🔴 *UNASSIGNED* — no rule matched'
-      : isConflict
-        ? `⚠ *Conflict* — currently owned by ${currentOwnerName}`
-        : `✅ *Ownership confirmed*`;
+    let statusLine;
+    if (result.rule === 'UNASSIGNED') {
+      if (!companyId) {
+        statusLine = '🔴 *UNASSIGNED* — no HubSpot record found';
+      } else if (!input.market && !input.ownerHQ) {
+        statusLine = '🔴 *UNASSIGNED* — HubSpot record found but missing city/state';
+      } else {
+        statusLine = '🔴 *UNASSIGNED* — no rule matched';
+      }
+    } else if (isConflict) {
+      statusLine = `⚠ *Conflict* — currently owned by ${currentOwnerName}`;
+    } else {
+      statusLine = `✅ *Ownership confirmed*`;
+    }
 
     const blocks = [
       header('📋 Ownership Resolution'),
