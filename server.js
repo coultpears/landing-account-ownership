@@ -435,19 +435,23 @@ app.command('/check', async ({ command, ack, respond }) => {
       }
     } catch { /* non-fatal — continue without HubSpot data */ }
 
-    // ── Step 4: Web search fallback — only if still UNASSIGNED and HS missing ──
-    if (result.rule === 'UNASSIGNED' && !input.market && !input.ownerHQ) {
+    // ── Step 4: Web search fallback — fires when still missing location ───────
+    // Runs if (a) UNASSIGNED with no location, or (b) HubSpot record exists but
+    // is missing city/state (so we can offer to fill it in).
+    if (!input.market && !input.ownerHQ) {
       try {
         const found = await enrichCompanyLocation(input.ownerName);
         if (found.city || found.state) {
           webCity  = found.city  || null;
           webState = found.state || null;
           const webMarket = [webCity, webState].filter(Boolean).join(' ');
-          const retried   = resolve({ ...input, market: webMarket });
-          if (retried.rule !== 'UNASSIGNED') {
-            result       = retried;
-            input.market = webMarket;
-            enrichmentNote = `🌐 Location from web search: *${webMarket}*`;
+          if (result.rule === 'UNASSIGNED') {
+            const retried = resolve({ ...input, market: webMarket });
+            if (retried.rule !== 'UNASSIGNED') {
+              result       = retried;
+              input.market = webMarket;
+              enrichmentNote = `🌐 Location from web search: *${webMarket}*`;
+            }
           }
         }
       } catch { /* non-fatal */ }
@@ -464,10 +468,10 @@ app.command('/check', async ({ command, ack, respond }) => {
       suggestedReps.length > 0 &&
       !suggestedReps.some(r => normStr(r) === normStr(currentOwnerName));
 
-    // ── Store pending context (for assignment buttons) ───────────────────────
+    // ── Store pending context (for assignment + enrichment buttons) ──────────
     const config = loadConfig();
     let checkKey = null;
-    if (companyId && suggestedReps.length > 0) {
+    if (companyId) {
       checkKey = makeFixKey();
       setPendingFix(checkKey, {
         companyId,
@@ -561,6 +565,36 @@ app.command('/check', async ({ command, ack, respond }) => {
       }
     } else if (result.rule === 'UNASSIGNED') {
       blocks.push(section('_No HubSpot record found — search HubSpot manually to assign._'));
+    }
+
+    // ── Enrichment button — offer to fill missing city/state from web search ──
+    const canEnrichLocation = companyId && checkKey &&
+      (webCity || webState) && (!hsCity || !hsState);
+    if (canEnrichLocation) {
+      const locationLabel = [webCity, webState].filter(Boolean).join(', ');
+      const enrichKey = `enrich_${checkKey}`;
+      setPendingFix(enrichKey, { companyId, companyName: input.ownerName, link: hubspotLink, webCity, webState });
+      blocks.push(divider());
+      blocks.push(section(`📍 HubSpot is missing city/state. Web search found: *${locationLabel}*`));
+      blocks.push({
+        type: 'actions',
+        block_id: enrichKey,
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: '✅ Update record', emoji: true },
+            style: 'primary',
+            action_id: 'check_enrich_yes',
+            value: enrichKey
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: '❌ No', emoji: true },
+            action_id: 'check_enrich_no',
+            value: enrichKey
+          }
+        ]
+      });
     }
 
     log('respond_sent', { cmd: '/check', ms: Date.now() - t0, rule: result.rule, rep: repDisplay, conflict: isConflict, companyId });
@@ -661,6 +695,57 @@ app.action('check_assign_other', async ({ body, ack, respond }) => {
   } catch (err) {
     await respond({ text: `❌ Failed to update HubSpot: ${err.message}`, replace_original: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Interactive: /check — Update city/state from web search
+// ---------------------------------------------------------------------------
+
+app.action('check_enrich_yes', async ({ body, ack, respond }) => {
+  await ack();
+
+  const enrichKey = body.actions[0].value;
+  const fix       = getPendingFix(enrichKey);
+
+  if (!fix) {
+    await respond({ text: '❌ This action has expired. Run `/check` again.', replace_original: false });
+    return;
+  }
+
+  const { companyId, companyName, link, webCity, webState } = fix;
+  const update = {};
+  if (webCity)  update.city  = webCity;
+  if (webState) update.state = webState;
+
+  try {
+    await updateCompany(companyId, update);
+    pendingFixes.delete(enrichKey);
+
+    const locationLabel = [webCity, webState].filter(Boolean).join(', ');
+    appendLog({
+      timestamp: new Date().toISOString(),
+      rule: 'ENRICH_LOCATION',
+      action: 'accepted',
+      source: 'slack /check',
+      companyId, companyName,
+      city: webCity, state: webState,
+      slackUser: body.user?.name || body.user?.id
+    });
+
+    await respond({
+      replace_original: false,
+      text: `📍 Updated *<${link}|${companyName}>* — city/state set to *${locationLabel}*.`
+    });
+  } catch (err) {
+    await respond({ text: `❌ Failed to update HubSpot: ${err.message}`, replace_original: false });
+  }
+});
+
+app.action('check_enrich_no', async ({ body, ack, respond }) => {
+  await ack();
+  const enrichKey = body.actions[0].value;
+  pendingFixes.delete(enrichKey);
+  await respond({ replace_original: false, text: '📍 Skipped — city/state not updated.' });
 });
 
 // ---------------------------------------------------------------------------
