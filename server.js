@@ -214,6 +214,59 @@ function parseCheckText(text) {
 }
 
 // ---------------------------------------------------------------------------
+// Shared assignment helper — used by check_assign_suggested + check_assign_other
+// ---------------------------------------------------------------------------
+
+/**
+ * Write the HubSpot owner update + ownership rule, auto-fill any missing
+ * city/state with web-discovered values, and append to the audit log.
+ *
+ * Returns { locationFilled: boolean } for confirmation messaging.
+ */
+async function performAssignment(fix, targetRep, slackUserName) {
+  const { companyId, companyName, rule, workingRep, repOwnerIds,
+          webCity, webState, hsCity, hsState } = fix;
+
+  const newOwnerId = repOwnerIds[targetRep] || null;
+
+  const update = { landing_ownership_rule: rule };
+  if (newOwnerId) update.hubspot_owner_id = newOwnerId;
+  // Auto-fill city/state with web-discovered data when the HubSpot record was missing them
+  if (!hsCity  && webCity)  update.city  = webCity;
+  if (!hsState && webState) update.state = webState;
+
+  await updateCompany(companyId, update);
+
+  const locationFilled = (!hsCity && webCity) || (!hsState && webState);
+
+  appendLog({
+    timestamp:      new Date().toISOString(),
+    rule:           'OWNER_REASSIGNMENT',
+    action:         'accepted',
+    source:         'slack /check',
+    companyId, companyName,
+    from:           workingRep,
+    to:             targetRep,
+    newOwnerId,
+    hsRule:         rule,
+    locationFilled: !!locationFilled,
+    slackUser:      slackUserName
+  });
+
+  return { locationFilled };
+}
+
+/**
+ * Build the static_select options list from all reps that have a mapped
+ * HubSpot owner ID. Used for "Assign to someone else…" dropdown.
+ */
+function buildRepOptions(repOwnerIds) {
+  return KNOWN_REPS
+    .filter(r => repOwnerIds[r])
+    .map(r => ({ text: { type: 'plain_text', text: r }, value: r }));
+}
+
+// ---------------------------------------------------------------------------
 // /check — ownership resolution
 // ---------------------------------------------------------------------------
 
@@ -226,21 +279,20 @@ app.command('/check', async ({ command, ack, respond }) => {
     return;
   }
 
-  // Acknowledge immediately with a working message; replace when done
   await respond({ response_type: 'ephemeral', text: `_Resolving ownership for *${text}*…_` });
 
   try {
     let input = parseCheckText(text);
 
-    // ── Enrichment (cache → property-name search → HQ search) ──────────────
+    // ── Step 1: Standard enrichment (cache → property-name → HQ search) ────
     const cache = loadCache();
     const key   = cacheKey(input.ownerName);
 
     if (cache[key]) {
       const c = cache[key];
-      if (c.ownerName)                             input.ownerName    = c.ownerName;
-      if (c.market        && !input.market)        input.market       = c.market;
-      if (c.ownerHQ       && !input.ownerHQ)       input.ownerHQ      = c.ownerHQ;
+      if (c.ownerName)                             input.ownerName     = c.ownerName;
+      if (c.market        && !input.market)        input.market        = c.market;
+      if (c.ownerHQ       && !input.ownerHQ)       input.ownerHQ       = c.ownerHQ;
       if (c.propertyClass && !input.propertyClass) input.propertyClass = c.propertyClass;
     } else if (looksLikePropertyName(input.ownerName)) {
       const enriched = await enrichFromPropertyName(input.ownerName);
@@ -276,59 +328,265 @@ app.command('/check', async ({ command, ack, respond }) => {
       return;
     }
 
-    // ── Resolution ───────────────────────────────────────────────────────────
-    const result     = resolve(input);
-    const repDisplay = Array.isArray(result.rep) ? result.rep.join(' / ') : (result.rep || 'UNASSIGNED');
-    const ruleLabel  = RULE_LABELS[result.rule] || result.rule;
+    // ── Step 2: Initial resolve ─────────────────────────────────────────────
+    let result = resolve(input);
 
-    // ── HubSpot record lookup (best-effort) ───────────────────────────────────
-    let hubspotLink    = null;
-    let missingLocation = false;
+    // ── Step 3: HubSpot record lookup — city/state/owner before web search ──
+    let companyId       = null;
+    let hubspotLink     = null;
+    let currentOwnerName = null;
+    let hsCity = null, hsState = null;  // what HubSpot actually has
+    let webCity = null, webState = null; // what web search finds (only if HS missing)
+    let enrichmentNote  = null;
+
     try {
-      const [companies, portalId] = await Promise.all([
+      const [hits, portalId, allOwners] = await Promise.all([
         searchCompanyByName(input.ownerName),
-        getPortalId()
+        getPortalId(),
+        getOwners()
       ]);
-      if (companies.length > 0) {
-        const co    = companies[0];
-        hubspotLink = `https://app.hubspot.com/contacts/${portalId}/company/${co.id}`;
-        const p     = co.properties || {};
-        missingLocation = !p.city || !p.state;
+
+      if (hits.length > 0) {
+        companyId   = hits[0].id;
+        hubspotLink = `https://app.hubspot.com/contacts/${portalId}/company/${companyId}`;
+
+        const company = await getCompany(companyId);
+        const p       = company.properties || {};
+
+        hsCity  = p.city  || null;
+        hsState = p.state || null;
+
+        // Current HubSpot owner
+        if (p.hubspot_owner_id) {
+          const o = allOwners.find(o => String(o.id) === String(p.hubspot_owner_id));
+          if (o) currentOwnerName = `${o.firstName} ${o.lastName}`.trim();
+        }
+
+        // Re-resolve using HubSpot city/state if input was missing location
+        const hsMarket = [hsCity, hsState].filter(Boolean).join(' ');
+        if (hsMarket && !input.market && !input.ownerHQ) {
+          const retried = resolve({ ...input, market: hsMarket });
+          if (retried.rule !== 'UNASSIGNED') {
+            result = retried;
+            input.market = hsMarket;
+            enrichmentNote = `📍 Location from HubSpot: *${hsMarket}*`;
+          }
+        }
       }
-    } catch { /* non-fatal */ }
+    } catch { /* non-fatal — continue without HubSpot data */ }
+
+    // ── Step 4: Web search fallback — only if still UNASSIGNED and HS missing ──
+    if (result.rule === 'UNASSIGNED' && !input.market && !input.ownerHQ) {
+      try {
+        const found = await enrichCompanyLocation(input.ownerName);
+        if (found.city || found.state) {
+          webCity  = found.city  || null;
+          webState = found.state || null;
+          const webMarket = [webCity, webState].filter(Boolean).join(' ');
+          const retried   = resolve({ ...input, market: webMarket });
+          if (retried.rule !== 'UNASSIGNED') {
+            result       = retried;
+            input.market = webMarket;
+            enrichmentNote = `🌐 Location from web search: *${webMarket}*`;
+          }
+        }
+      } catch { /* non-fatal */ }
+    }
+
+    // ── Conflict detection ───────────────────────────────────────────────────
+    const suggestedReps = (Array.isArray(result.rep) ? result.rep : [result.rep])
+      .filter(r => r && r !== 'UNASSIGNED');
+    const repDisplay    = suggestedReps.join(' / ') || 'UNASSIGNED';
+    const ruleLabel     = RULE_LABELS[result.rule] || result.rule;
+
+    const normStr  = s => (s || '').toLowerCase().replace(/[^a-z\s]/g, '').trim();
+    const isConflict = currentOwnerName &&
+      suggestedReps.length > 0 &&
+      !suggestedReps.some(r => normStr(r) === normStr(currentOwnerName));
+
+    // ── Store pending context (for assignment buttons) ───────────────────────
+    const config = loadConfig();
+    let checkKey = null;
+    if (companyId && suggestedReps.length > 0) {
+      checkKey = makeFixKey();
+      setPendingFix(checkKey, {
+        companyId,
+        companyName: input.ownerName,
+        link:        hubspotLink,
+        suggestedRep: repDisplay,
+        rule:         result.rule,
+        workingRep:   currentOwnerName || '(unassigned)',
+        repOwnerIds:  config.repOwnerIds || {},
+        hsCity, hsState,
+        webCity, webState
+      });
+    }
 
     // ── Build response blocks ─────────────────────────────────────────────────
     const identityLines = [
       `*Query:* ${input.ownerName}`,
-      input.market      ? `*Property:* ${input.market}`   : null,
-      input.ownerHQ     ? `*Owner HQ:* ${input.ownerHQ}`  : null,
-      result.matchedOwner ? `*Matched:* ${result.matchedOwner}` : null
+      input.market        ? `*Property:* ${input.market}`        : null,
+      input.ownerHQ       ? `*Owner HQ:* ${input.ownerHQ}`       : null,
+      result.matchedOwner ? `*Matched:* ${result.matchedOwner}`  : null,
+      currentOwnerName    ? `*Current HubSpot owner:* ${currentOwnerName}` : null
     ].filter(Boolean).join('\n');
+
+    const statusLine = result.rule === 'UNASSIGNED'
+      ? '🔴 *UNASSIGNED* — no rule matched'
+      : isConflict
+        ? `⚠ *Conflict* — currently owned by ${currentOwnerName}`
+        : `✅ *Ownership confirmed*`;
 
     const blocks = [
       header('📋 Ownership Resolution'),
       section(identityLines),
-      divider(),
-      section(`*Rule:* ${ruleLabel}\n*Assigned to:* *${repDisplay}*`),
-      section(`*Why:* ${result.explanation}`)
     ];
+
+    if (enrichmentNote) blocks.push(section(enrichmentNote));
+
+    blocks.push(divider());
+    blocks.push(section(
+      `${statusLine}\n` +
+      `*Rule:* ${ruleLabel}\n` +
+      (repDisplay !== 'UNASSIGNED' ? `*Should be:* *${repDisplay}*` : '*Should be:* _(no match found)_')
+    ));
+    blocks.push(section(`*Why:* ${result.explanation}`));
 
     const allWarnings = [...qual.flags, ...result.warnings];
     if (allWarnings.length > 0) {
       blocks.push(section(allWarnings.map(w => `⚠ ${w}`).join('\n')));
     }
 
-    if (hubspotLink) {
-      blocks.push(section(`*HubSpot:* <${hubspotLink}|View record>`));
-      if (missingLocation) {
-        blocks.push(section('⚠ This HubSpot record is missing city/state. Run `/fix` with the record ID to auto-fill.'));
+    if (hubspotLink) blocks.push(section(`*HubSpot:* <${hubspotLink}|View record>`));
+
+    // ── Action buttons ────────────────────────────────────────────────────────
+    // Show whenever we found the HubSpot record and have a suggestion or just the dropdown.
+    if (companyId) {
+      blocks.push(divider());
+      const repOptions = buildRepOptions(config.repOwnerIds || {});
+      const elements   = [];
+
+      // Primary button — only when a specific rep is suggested
+      if (suggestedReps.length > 0 && checkKey) {
+        elements.push({
+          type:      'button',
+          text:      { type: 'plain_text', text: `✅ Assign to ${repDisplay}`, emoji: true },
+          style:     'primary',
+          action_id: 'check_assign_suggested',
+          value:     checkKey
+        });
       }
+
+      // "Assign to someone else" dropdown — always shown when record exists
+      if (repOptions.length > 0 && checkKey) {
+        elements.push({
+          type:        'static_select',
+          placeholder: { type: 'plain_text', text: suggestedReps.length > 0 ? 'Assign to someone else…' : 'Assign to rep…' },
+          action_id:   'check_assign_other',
+          options:     repOptions
+        });
+      }
+
+      if (elements.length > 0) {
+        blocks.push({ type: 'actions', block_id: checkKey, elements });
+      }
+    } else if (result.rule === 'UNASSIGNED') {
+      blocks.push(section('_No HubSpot record found — search HubSpot manually to assign._'));
     }
 
     await respond({ blocks, replace_original: true });
 
   } catch (err) {
     await respond({ text: `❌ Error: ${err.message}`, replace_original: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Interactive: /check — Assign to suggested rep
+// ---------------------------------------------------------------------------
+
+app.action('check_assign_suggested', async ({ body, ack, respond }) => {
+  await ack();
+
+  const checkKey = body.actions[0].value;
+  const fix      = getPendingFix(checkKey);
+  const today    = new Date().toISOString().slice(0, 10);
+
+  if (!fix) {
+    await respond({ text: '❌ This action has expired. Run `/check` again.', replace_original: true });
+    return;
+  }
+
+  // Pick first rep that has a mapped owner ID
+  const reps      = fix.suggestedRep.split(' / ').map(r => r.trim());
+  const targetRep = reps.find(r => fix.repOwnerIds[r]) || reps[0];
+
+  try {
+    const { locationFilled } = await performAssignment(fix, targetRep, body.user?.name || body.user?.id);
+    pendingFixes.delete(checkKey);
+
+    const locationNote = locationFilled
+      ? `\n📍 *Also updated:* city/state filled in from enrichment data.`
+      : '';
+
+    await respond({
+      replace_original: true,
+      blocks: [
+        header('✅ Ownership Assigned'),
+        section(
+          `*Company:* <${fix.link}|${fix.companyName}>\n` +
+          `*Assigned to:* *${targetRep}*\n` +
+          `*Rule written:* \`${fix.rule}\`\n` +
+          `*By:* ${body.user?.name || 'Unknown'} on ${today}` +
+          locationNote
+        )
+      ]
+    });
+  } catch (err) {
+    await respond({ text: `❌ Failed to update HubSpot: ${err.message}`, replace_original: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Interactive: /check — Assign to someone else (dropdown)
+// ---------------------------------------------------------------------------
+
+app.action('check_assign_other', async ({ body, ack, respond }) => {
+  await ack();
+
+  const checkKey  = body.actions[0].block_id;
+  const targetRep = body.actions[0].selected_option?.value;
+  const fix       = getPendingFix(checkKey);
+  const today     = new Date().toISOString().slice(0, 10);
+
+  if (!fix || !targetRep) {
+    await respond({ text: '❌ This action has expired or had no selection. Run `/check` again.', replace_original: true });
+    return;
+  }
+
+  try {
+    const { locationFilled } = await performAssignment(fix, targetRep, body.user?.name || body.user?.id);
+    pendingFixes.delete(checkKey);
+
+    const locationNote = locationFilled
+      ? `\n📍 *Also updated:* city/state filled in from enrichment data.`
+      : '';
+
+    await respond({
+      replace_original: true,
+      blocks: [
+        header('✅ Ownership Assigned'),
+        section(
+          `*Company:* <${fix.link}|${fix.companyName}>\n` +
+          `*Assigned to:* *${targetRep}*\n` +
+          `*Rule written:* \`${fix.rule}\`\n` +
+          `*By:* ${body.user?.name || 'Unknown'} on ${today}` +
+          locationNote
+        )
+      ]
+    });
+  } catch (err) {
+    await respond({ text: `❌ Failed to update HubSpot: ${err.message}`, replace_original: true });
   }
 });
 
