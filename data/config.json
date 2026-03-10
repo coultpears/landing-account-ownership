@@ -4,7 +4,20 @@
   "_comment_slackToRep": "Map Slack user IDs to rep names for /audit-me. Keys are Slack user IDs (right-click profile → Copy member ID). Values must match rep names exactly as they appear in assignments.json.",
 
   "slackToRep": {
-    "U0AF4FK34C8": "Matt Pears"
+    "U0AF4FK34C8": "Matt Pears",
+    "U0AKQ57J9L1": "Jack Harvey",
+    "U018HHGPS13": "Jack Thomasson",
+    "U02CS01TPC3": "Wells Davis",
+    "U09HKLT87N2": "John LaVanway",
+    "U08UZ3F52TU": "Scout Bishop",
+    "U0ACBRKRX0A": "Ashtyn Garner",
+    "U0ADR3FBFT8": "Renato Lagomarsino",
+    "U0A25B0UBU2": "Sophia Nadler",
+    "U0A34CB2R8F": "Richard Baugh",
+    "U08TML2EC8G": "Raegan Harris",
+    "U090GNCGBGD": "Ghislain Cossio",
+    "U0936RS9NUX": "Nolan Moran",
+    "U08US2A5TK8": "Xander Williams"
   },
 
   "_comment_repOwnerIds": "HubSpot owner IDs for reps that can be auto-assigned via the audit reassignment prompt. Add new reps here using their HubSpot owner ID (Settings → Users & Teams → click user → copy ID from URL).",
