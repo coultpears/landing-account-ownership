@@ -113,8 +113,113 @@ Every check is logged automatically to `data/log.json`.
 
 ---
 
-## Phase 1 scope
+---
 
-This tool resolves ownership for individual lookups. Phase 2 will add a REST API, CRM/Salesforce integration, and a web UI. For now, run checks from the CLI and refer to `data/log.json` for audit history.
+## Slack Bot
+
+Three slash commands available in Slack:
+
+| Command | What it does |
+|---------|-------------|
+| `/check [owner or property name]` | Full ownership resolution — fuzzy match, web enrichment, HubSpot lookup, resolve. Returns the rule, assigned rep, explanation, and action buttons to assign directly from Slack. |
+| `/audit-me` | Runs the 90-day conflict audit for your rep. Lists every conflict sorted by most recent activity, with HubSpot links. |
+| `/fix [record ID or company name]` | Looks up a HubSpot record, runs resolution, shows current vs correct owner with Approve/Decline buttons. |
+
+### Running locally (Socket Mode)
+
+```bash
+npm install
+# Fill in .env — see .env.example
+node server.js
+# or: npm start
+```
+
+Requires `SLACK_APP_TOKEN` in `.env` for Socket Mode (no public URL needed).
+
+---
+
+## Deploy to Cloud Run
+
+Cloud Run runs the bot in HTTP mode — no `SLACK_APP_TOKEN` needed, just the bot token and signing secret.
+
+### Prerequisites
+
+- [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) installed and authenticated
+- A GCP project with billing enabled
+
+### 1 — Enable APIs (one-time per project)
+
+```bash
+gcloud services enable \
+  run.googleapis.com \
+  artifactregistry.googleapis.com \
+  cloudbuild.googleapis.com
+```
+
+### 2 — Create an Artifact Registry repository (one-time)
+
+```bash
+gcloud artifacts repositories create landing-ownership \
+  --repository-format=docker \
+  --location=us-central1
+```
+
+### 3 — Build and push the container
+
+```bash
+export PROJECT_ID=$(gcloud config get-value project)
+export REGION=us-central1
+export IMAGE=$REGION-docker.pkg.dev/$PROJECT_ID/landing-ownership/bot
+
+gcloud builds submit --tag $IMAGE
+```
+
+### 4 — Deploy to Cloud Run
+
+Replace the `...` values with your real secrets. Do **not** include `SLACK_APP_TOKEN` — that enables Socket Mode, which won't work on Cloud Run.
+
+```bash
+gcloud run deploy landing-ownership-bot \
+  --image $IMAGE \
+  --platform managed \
+  --region $REGION \
+  --allow-unauthenticated \
+  --min-instances 1 \
+  --timeout 300 \
+  --set-env-vars "HUBSPOT_TOKEN=pat-na1-...,HUBSPOT_PORTAL_ID=20754835,SLACK_BOT_TOKEN=xoxb-...,SLACK_SIGNING_SECRET=..."
+```
+
+> `--min-instances 1` keeps the bot warm so it responds instantly.
+> `--timeout 300` gives `/audit-me` enough time to finish (audit can take 30–60s).
+
+### 5 — Get the public URL
+
+```bash
+gcloud run services describe landing-ownership-bot \
+  --platform managed \
+  --region us-central1 \
+  --format 'value(status.url)'
+```
+
+### 6 — Set the Request URL in Slack
+
+Take the URL from step 5 and set it in **two places** in your Slack app settings:
+
+- **Slash Commands** → each of `/check`, `/audit-me`, `/fix` → Request URL: `https://<your-url>/slack/events`
+- **Interactivity & Shortcuts** → Request URL: `https://<your-url>/slack/events`
+
+### Re-deploying after code changes
+
+```bash
+gcloud builds submit --tag $IMAGE && \
+gcloud run deploy landing-ownership-bot \
+  --image $IMAGE \
+  --platform managed \
+  --region $REGION
+```
+
+> **Note:** `data/cache.json` and `data/log.json` are written inside the container and reset on each new deployment. For persistent logs, mount a Cloud Storage bucket or push log entries to a database.
+
+---
 
 For full architecture details, see [CLAUDE.md](./CLAUDE.md).

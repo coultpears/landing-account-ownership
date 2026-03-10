@@ -454,24 +454,40 @@ node server.js
 ### Cloud Run deployment
 
 ```bash
-# Build and push the container
-gcloud builds submit --tag gcr.io/PROJECT_ID/landing-ownership
+# One-time: enable APIs
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com cloudbuild.googleapis.com
 
-# Deploy
-gcloud run deploy landing-ownership \
-  --image gcr.io/PROJECT_ID/landing-ownership \
+# One-time: create Artifact Registry repo
+gcloud artifacts repositories create landing-ownership \
+  --repository-format=docker --location=us-central1
+
+# Build and push
+export PROJECT_ID=$(gcloud config get-value project)
+export IMAGE=us-central1-docker.pkg.dev/$PROJECT_ID/landing-ownership/bot
+gcloud builds submit --tag $IMAGE
+
+# Deploy (replace … with real values — do NOT include SLACK_APP_TOKEN)
+gcloud run deploy landing-ownership-bot \
+  --image $IMAGE \
   --platform managed \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-env-vars SLACK_BOT_TOKEN=xoxb-…,SLACK_SIGNING_SECRET=…,HUBSPOT_TOKEN=…,HUBSPOT_PORTAL_ID=…
+  --min-instances 1 \
+  --timeout 300 \
+  --set-env-vars "HUBSPOT_TOKEN=…,HUBSPOT_PORTAL_ID=…,SLACK_BOT_TOKEN=xoxb-…,SLACK_SIGNING_SECRET=…"
+
+# Get the public URL
+gcloud run services describe landing-ownership-bot \
+  --platform managed --region us-central1 --format 'value(status.url)'
 ```
 
-After deployment, copy the service URL and set it as the request URL for your slash commands and interactivity endpoint in the Slack app settings.
+After deployment, set `https://<url>/slack/events` as the Request URL for all three slash commands and for Interactivity & Shortcuts in your Slack app settings.
 
 **Notes:**
-- Do **not** set `SLACK_APP_TOKEN` on Cloud Run — Socket Mode is for local dev only.
+- Do **not** set `SLACK_APP_TOKEN` on Cloud Run — its presence enables Socket Mode, which won't work.
 - Cloud Run injects `PORT` automatically.
-- The `data/cache.json` and `data/log.json` files are written inside the container. For persistence across deployments, mount a Cloud Storage bucket or use a managed database.
+- `--min-instances 1` prevents cold starts. `--timeout 300` gives `/audit-me` enough time to complete.
+- `data/cache.json` and `data/log.json` are written inside the container and reset on redeployment. Mount Cloud Storage for persistence if needed.
 
 ### Source files
 
