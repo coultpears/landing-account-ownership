@@ -834,9 +834,11 @@ app.command('/audit', async ({ command, ack, respond, client }) => {
   // If no name provided, resolve from Slack user identity
   let repName = null;
   if (nameText) {
-    const needle = nameText.toLowerCase();
+    const needle = nameText.toLowerCase().trim();
+    // Exact match, then substring, then any word overlap (first or last name)
     repName = KNOWN_REPS.find(r => r.toLowerCase() === needle)
-      || KNOWN_REPS.find(r => r.toLowerCase().includes(needle));
+      || KNOWN_REPS.find(r => r.toLowerCase().includes(needle))
+      || KNOWN_REPS.find(r => needle.split(/\s+/).some(w => w.length >= 3 && r.toLowerCase().includes(w)));
     if (!repName) {
       await respond(
         `❌ No rep found matching "${nameText}".\n\n` +
