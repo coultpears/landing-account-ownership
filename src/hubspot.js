@@ -288,6 +288,16 @@ async function updateCompany(companyId, properties) {
   return apiRequest('PATCH', `/crm/v3/objects/companies/${companyId}`, { properties });
 }
 
+async function getDeal(dealId) {
+  const props = 'dealname,dealstage,hubspot_owner_id,amount,hs_lastmodifieddate,pipeline,closedate,createdate';
+  return apiRequest('GET', `/crm/v3/objects/deals/${dealId}?properties=${props}`);
+}
+
+async function getContact(contactId) {
+  const props = 'firstname,lastname,email,phone,hubspot_owner_id,hs_lead_status,lifecyclestage,lastmodifieddate';
+  return apiRequest('GET', `/crm/v3/objects/contacts/${contactId}?properties=${props}`);
+}
+
 // ---------------------------------------------------------------------------
 // Public: Search companies by name (used by Slack bot /check and /fix)
 // ---------------------------------------------------------------------------
@@ -399,5 +409,57 @@ module.exports = {
   searchCompanyByName,
   getDealStageLabels,
   getDealStageOrder,
-  getAssociatedIds
+  getAssociatedIds,
+  getDeal,
+  getContact,
+  searchDealsByName,
+  searchContacts,
+  searchCompanyByDomain
 };
+
+// ---------------------------------------------------------------------------
+// Public: Search companies by domain
+// ---------------------------------------------------------------------------
+
+async function searchCompanyByDomain(domain, limit = 3) {
+  return searchAll(
+    'companies',
+    [{ filters: [{ propertyName: 'domain', operator: 'EQ', value: domain }] }],
+    ['name', 'city', 'state', 'domain', 'industry', 'hubspot_owner_id'],
+    limit
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Public: Search deals by name
+// ---------------------------------------------------------------------------
+
+async function searchDealsByName(query, limit = 3) {
+  return searchAll(
+    'deals',
+    [{ filters: [{ propertyName: 'dealname', operator: 'CONTAINS_TOKEN', value: query }] }],
+    ['dealname', 'dealstage', 'hubspot_owner_id', 'amount', 'hs_lastmodifieddate'],
+    limit
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Public: Search contacts by name or email
+// ---------------------------------------------------------------------------
+
+async function searchContacts(query, limit = 3) {
+  // If it looks like an email, search by email; otherwise search by name
+  const isEmail = query.includes('@');
+  const filters = isEmail
+    ? [{ filters: [{ propertyName: 'email', operator: 'EQ', value: query }] }]
+    : [
+        { filters: [{ propertyName: 'firstname', operator: 'CONTAINS_TOKEN', value: query }] },
+        { filters: [{ propertyName: 'lastname',  operator: 'CONTAINS_TOKEN', value: query }] }
+      ];
+  return searchAll(
+    'contacts',
+    filters,
+    ['firstname', 'lastname', 'email', 'phone', 'hubspot_owner_id', 'hs_lead_status', 'lifecyclestage', 'lastmodifieddate'],
+    limit
+  );
+}

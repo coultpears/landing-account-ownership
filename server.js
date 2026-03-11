@@ -4,9 +4,9 @@
  * server.js — Slack Bot MVP (Phase 3)
  *
  * Slash commands:
- *   /check [owner or property name]  — full ownership resolution pipeline
- *   /audit-me                        — conflict audit for the calling rep (last 90 days)
- *   /fix [hubspot record ID | name]  — show current vs correct owner with Approve/Decline
+ *   /check [owner or property name or email]  — full ownership resolution pipeline
+ *   /audit [rep name] [days]                  — conflict audit for a rep (default: calling user, 90 days)
+ *   /lookup [name or email or record ID]      — lightweight HubSpot record search (deals, companies, contacts)
  *
  * Setup:
  *   1. npm install
@@ -47,9 +47,16 @@ const {
   getOwners,
   getPortalId,
   getCompany,
+  getDeal,
+  getContact,
   updateCompany,
   ensureOwnershipRuleProperty,
-  searchCompanyByName
+  searchCompanyByName,
+  searchDealsByName,
+  searchContacts,
+  searchCompanyByDomain,
+  getDealStageLabels,
+  getAssociatedCompanyIds
 }                                                    = require('./src/hubspot');
 
 // ---------------------------------------------------------------------------
@@ -65,9 +72,10 @@ const {
 // at the HTTP layer prevents the resulting retry storm.
 // ---------------------------------------------------------------------------
 
-// Prevent crashes from transient Socket Mode reconnection errors
+// Prevent crashes from transient Socket Mode reconnection errors or
+// network blips in Bolt's respond() calls.
 process.on('unhandledRejection', (err) => {
-  console.error('[unhandledRejection]', err.message || err);
+  console.error('[unhandledRejection]', err?.message || err);
 });
 
 let app;
@@ -348,6 +356,43 @@ app.command('/check', async ({ command, ack, respond }) => {
 
   try {
     let input = parseCheckText(text);
+    let emailContact = null;  // populated if input is an email address
+    let emailNote    = null;
+
+    // ── Step 0: Email detection — extract domain, find company + contact ───
+    const emailMatch = input.ownerName.match(/^([^\s@]+@([^\s@]+\.[^\s@]+))$/i);
+    if (emailMatch) {
+      const email  = emailMatch[1];
+      const domain = emailMatch[2];
+
+      // Search for contact and company in parallel
+      const [contacts, companies] = await Promise.all([
+        searchContacts(email).catch(() => []),
+        searchCompanyByDomain(domain).catch(() => [])
+      ]);
+
+      if (contacts.length) {
+        const ctp = contacts[0].properties || {};
+        emailContact = {
+          id:    contacts[0].id,
+          name:  [ctp.firstname, ctp.lastname].filter(Boolean).join(' ') || email,
+          email: ctp.email || email,
+          owner: ctp.hubspot_owner_id || null
+        };
+      }
+
+      if (companies.length) {
+        const cp = companies[0].properties || {};
+        input.ownerName = cp.name || domain;
+        if (cp.city && !input.market)  input.market = [cp.city, cp.state].filter(Boolean).join(' ');
+        if (cp.state && !input.ownerHQ) input.ownerHQ = cp.state;
+        emailNote = `📧 Email lookup: *${email}* → company *${input.ownerName}*`;
+      } else {
+        // No company found for domain — use domain as owner name
+        input.ownerName = domain;
+        emailNote = `📧 Email lookup: *${email}* — no company found for domain \`${domain}\``;
+      }
+    }
 
     // ── Step 1: Standard enrichment (cache → property-name → HQ search) ────
     const cache = loadCache();
@@ -410,6 +455,15 @@ app.command('/check', async ({ command, ack, respond }) => {
         getPortalId(),
         getOwners()
       ]);
+
+      // Resolve contact owner name + link now that we have portalId/allOwners
+      if (emailContact) {
+        emailContact.link = `https://app.hubspot.com/contacts/${portalId}/contact/${emailContact.id}`;
+        if (emailContact.owner) {
+          const co = allOwners.find(o => String(o.id) === String(emailContact.owner));
+          if (co) emailContact.ownerName = `${co.firstName} ${co.lastName}`.trim();
+        }
+      }
 
       if (hits.length > 0) {
         companyId   = hits[0].id;
@@ -496,7 +550,9 @@ app.command('/check', async ({ command, ack, respond }) => {
 
     // ── Build response blocks ─────────────────────────────────────────────────
     const identityLines = [
-      `*Query:* ${input.ownerName}`,
+      emailMatch          ? `*Query:* ${text}` : null,
+      emailContact        ? `*Contact:* ${emailContact.link ? `<${emailContact.link}|${emailContact.name}>` : emailContact.name} (${emailContact.email})${emailContact.ownerName ? ` — owner: ${emailContact.ownerName}` : ''}` : null,
+      `*${emailMatch ? 'Company' : 'Query'}:* ${input.ownerName}`,
       input.market        ? `*Property:* ${input.market}`        : null,
       input.ownerHQ       ? `*Owner HQ:* ${input.ownerHQ}`       : null,
       result.matchedOwner ? `*Matched:* ${result.matchedOwner}`  : null,
@@ -523,6 +579,7 @@ app.command('/check', async ({ command, ack, respond }) => {
       section(identityLines),
     ];
 
+    if (emailNote)      blocks.push(section(emailNote));
     if (enrichmentNote) blocks.push(section(enrichmentNote));
 
     blocks.push(divider());
@@ -937,272 +994,199 @@ app.command('/audit', async ({ command, ack, respond, client }) => {
 });
 
 // ---------------------------------------------------------------------------
-// /fix — resolve and present Approve/Decline for a specific company
+// /lookup — lightweight HubSpot record lookup (deal, company, or contact)
 // ---------------------------------------------------------------------------
 
-app.command('/fix', async ({ command, ack, respond }) => {
+app.command('/lookup', async ({ command, ack, respond }) => {
   const t0 = Date.now();
-  log('cmd_received', { cmd: '/fix', user: command.user_name, text: command.text });
+  log('cmd_received', { cmd: '/lookup', user: command.user_name, text: command.text });
 
   await ack();
-  log('ack_sent', { cmd: '/fix', ackMs: Date.now() - t0 });
+  log('ack_sent', { cmd: '/lookup', ackMs: Date.now() - t0 });
 
   const text = (command.text || '').trim();
   if (!text) {
-    await respond('Usage: `/fix [HubSpot record ID]` or `/fix [company name]`\nExample: `/fix 8924545632`');
-    log('respond_sent', { cmd: '/fix', ms: Date.now() - t0, result: 'usage' });
+    await respond(
+      'Usage: `/lookup [name, email, or record ID]`\n' +
+      'Searches HubSpot deals, companies, and contacts.\n' +
+      'Examples: `/lookup 8924545632` · `/lookup Greystar` · `/lookup john@example.com`'
+    );
+    log('respond_sent', { cmd: '/lookup', ms: Date.now() - t0, result: 'usage' });
     return;
   }
 
   await respond({ response_type: 'ephemeral', text: `_Looking up *${text}*…_` });
-  log('respond_working', { cmd: '/fix', ms: Date.now() - t0 });
+  log('respond_working', { cmd: '/lookup', ms: Date.now() - t0 });
 
   try {
-    await ensureOwnershipRuleProperty();
     const [allOwners, portalId] = await Promise.all([getOwners(), getPortalId()]);
+    const ownerName = (id) => {
+      if (!id) return '_(unassigned)_';
+      const o = allOwners.find(o => String(o.id) === String(id));
+      return o ? `${o.firstName} ${o.lastName}`.trim() : `Owner ID: ${id}`;
+    };
 
-    // ── Resolve company record ──────────────────────────────────────────────
-    let company, companyId;
     const isId = /^\d+$/.test(text);
+    const blocks = [];
+
     if (isId) {
-      company   = await getCompany(text);
-      companyId = text;
-    } else {
-      const hits = await searchCompanyByName(text);
-      if (!hits.length) {
-        await respond({ text: `❌ No HubSpot company found matching "${text}".`, replace_original: true });
+      // Try deal first, then company, then contact
+      let found = false;
+
+      // ── Try as Deal ──────────────────────────────────────────────────────
+      try {
+        const deal = await getDeal(text);
+        const dp = deal.properties || {};
+        const stageLabels = await getDealStageLabels();
+        const stageLabel = stageLabels[dp.dealstage] || dp.dealstage || '—';
+        const lastMod = dp.hs_lastmodifieddate ? new Date(dp.hs_lastmodifieddate) : null;
+        const lastModStr = lastMod ? `${humanizeDays(Math.floor((Date.now() - lastMod.getTime()) / 86400000))} _(${lastMod.toLocaleDateString()})_` : '—';
+        const hsLink = `https://app.hubspot.com/contacts/${portalId}/deal/${text}`;
+
+        // Get associated company
+        const assocCompanies = await getAssociatedCompanyIds('deals', [text]);
+        let companyLine = '';
+        if (assocCompanies[text]?.length) {
+          const companyId = assocCompanies[text][0];
+          try {
+            const co = await getCompany(companyId);
+            const coLink = `https://app.hubspot.com/contacts/${portalId}/company/${companyId}`;
+            companyLine = `\n*Company:* <${coLink}|${co.properties?.name || companyId}>`;
+          } catch { companyLine = `\n*Company ID:* ${companyId}`; }
+        }
+
+        blocks.push(
+          header('🔍 Deal Lookup'),
+          section(
+            `*Deal:* <${hsLink}|${dp.dealname || '(unnamed)'}>\n` +
+            `*Stage:* ${stageLabel}\n` +
+            `*Owner:* ${ownerName(dp.hubspot_owner_id)}\n` +
+            `*Last activity:* ${lastModStr}\n` +
+            `*Amount:* ${dp.amount ? `$${Number(dp.amount).toLocaleString()}` : '—'}` +
+            companyLine
+          )
+        );
+        found = true;
+      } catch { /* not a deal */ }
+
+      // ── Try as Company ───────────────────────────────────────────────────
+      if (!found) {
+        try {
+          const company = await getCompany(text);
+          const cp = company.properties || {};
+          const market = [cp.city, cp.state].filter(Boolean).join(', ') || '—';
+          const hsLink = `https://app.hubspot.com/contacts/${portalId}/company/${text}`;
+
+          blocks.push(
+            header('🔍 Company Lookup'),
+            section(
+              `*Company:* <${hsLink}|${cp.name || '(unnamed)'}>\n` +
+              `*Market:* ${market}\n` +
+              `*Industry:* ${cp.industry || '—'}\n` +
+              `*Domain:* ${cp.domain || '—'}\n` +
+              `*Owner:* ${ownerName(cp.hubspot_owner_id)}`
+            )
+          );
+          found = true;
+        } catch { /* not a company */ }
+      }
+
+      // ── Try as Contact ───────────────────────────────────────────────────
+      if (!found) {
+        try {
+          const contact = await getContact(text);
+          const ctp = contact.properties || {};
+          const name = [ctp.firstname, ctp.lastname].filter(Boolean).join(' ') || '(unnamed)';
+          const lastMod = ctp.lastmodifieddate ? new Date(ctp.lastmodifieddate) : null;
+          const lastModStr = lastMod ? `${humanizeDays(Math.floor((Date.now() - lastMod.getTime()) / 86400000))} _(${lastMod.toLocaleDateString()})_` : '—';
+          const hsLink = `https://app.hubspot.com/contacts/${portalId}/contact/${text}`;
+
+          blocks.push(
+            header('🔍 Contact Lookup'),
+            section(
+              `*Contact:* <${hsLink}|${name}>\n` +
+              `*Email:* ${ctp.email || '—'}\n` +
+              `*Phone:* ${ctp.phone || '—'}\n` +
+              `*Lifecycle:* ${ctp.lifecyclestage || '—'}\n` +
+              `*Lead status:* ${ctp.hs_lead_status || '—'}\n` +
+              `*Owner:* ${ownerName(ctp.hubspot_owner_id)}\n` +
+              `*Last activity:* ${lastModStr}`
+            )
+          );
+          found = true;
+        } catch { /* not a contact */ }
+      }
+
+      if (!found) {
+        await respond({ text: `❌ No deal, company, or contact found with ID \`${text}\`.`, replace_original: true });
         return;
       }
-      companyId = hits[0].id;
-      company   = await getCompany(companyId); // full property set
+
+    } else {
+      // ── Name/email search → search companies, deals, and contacts ──────
+      const stageLabels = await getDealStageLabels();
+      const [companyHits, dealHits, contactHits] = await Promise.all([
+        searchCompanyByName(text).catch(() => []),
+        searchDealsByName(text).catch(() => []),
+        searchContacts(text).catch(() => [])
+      ]);
+
+      if (!companyHits.length && !dealHits.length && !contactHits.length) {
+        await respond({ text: `❌ No results found for "${text}" in companies, deals, or contacts.`, replace_original: true });
+        return;
+      }
+
+      blocks.push(header(`🔍 Results for "${text}"`));
+
+      // Show matching deals
+      for (const deal of dealHits.slice(0, 3)) {
+        const dp = deal.properties || {};
+        const stageLabel = stageLabels[dp.dealstage] || dp.dealstage || '—';
+        const lastMod = dp.hs_lastmodifieddate ? new Date(dp.hs_lastmodifieddate) : null;
+        const lastModStr = lastMod ? humanizeDays(Math.floor((Date.now() - lastMod.getTime()) / 86400000)) : '—';
+        const hsLink = `https://app.hubspot.com/contacts/${portalId}/deal/${deal.id}`;
+        blocks.push(section(
+          `📋 *Deal:* <${hsLink}|${dp.dealname || '(unnamed)'}>\n` +
+          `*Stage:* ${stageLabel}   ·   *Owner:* ${ownerName(dp.hubspot_owner_id)}   ·   *Last activity:* ${lastModStr}` +
+          (dp.amount ? `   ·   *Amount:* $${Number(dp.amount).toLocaleString()}` : '')
+        ));
+      }
+
+      // Show matching companies
+      for (const co of companyHits.slice(0, 3)) {
+        const cp = co.properties || {};
+        const market = [cp.city, cp.state].filter(Boolean).join(', ') || '—';
+        const hsLink = `https://app.hubspot.com/contacts/${portalId}/company/${co.id}`;
+        blocks.push(section(
+          `🏢 *Company:* <${hsLink}|${cp.name || '(unnamed)'}>\n` +
+          `*Market:* ${market}   ·   *Industry:* ${cp.industry || '—'}   ·   *Owner:* ${ownerName(cp.hubspot_owner_id)}`
+        ));
+      }
+
+      // Show matching contacts
+      for (const ct of contactHits.slice(0, 3)) {
+        const ctp = ct.properties || {};
+        const ctName = [ctp.firstname, ctp.lastname].filter(Boolean).join(' ') || '(unnamed)';
+        const lastMod = ctp.lastmodifieddate ? new Date(ctp.lastmodifieddate) : null;
+        const lastModStr = lastMod ? humanizeDays(Math.floor((Date.now() - lastMod.getTime()) / 86400000)) : '—';
+        const hsLink = `https://app.hubspot.com/contacts/${portalId}/contact/${ct.id}`;
+        blocks.push(section(
+          `👤 *Contact:* <${hsLink}|${ctName}>\n` +
+          `*Email:* ${ctp.email || '—'}   ·   *Owner:* ${ownerName(ctp.hubspot_owner_id)}   ·   *Last activity:* ${lastModStr}`
+        ));
+      }
     }
 
-    const props  = company.properties || {};
-    const coName = props.name || `(ID: ${companyId})`;
-    const market = [props.city, props.state].filter(Boolean).join(' ') || null;
-    const hsLink = `https://app.hubspot.com/contacts/${portalId}/company/${companyId}`;
+    // Add HubSpot link as footer
+    blocks.push(divider());
+    blocks.push(section('_Use `/check [name]` for ownership resolution · `/audit [rep]` for conflict audit_'));
 
-    // ── Current HubSpot owner ───────────────────────────────────────────────
-    const currentOwner = props.hubspot_owner_id
-      ? allOwners.find(o => String(o.id) === String(props.hubspot_owner_id))
-      : null;
-    const currentOwnerName = currentOwner
-      ? `${currentOwner.firstName} ${currentOwner.lastName}`.trim()
-      : '(unassigned)';
-
-    // ── Ownership resolution ────────────────────────────────────────────────
-    const resolution = resolve({ ownerName: coName, market, isLeaseUp: false });
-    const expectedRep = Array.isArray(resolution.rep)
-      ? resolution.rep.join(' / ')
-      : (resolution.rep || 'UNASSIGNED');
-    const ruleLabel  = RULE_LABELS[resolution.rule] || resolution.rule;
-
-    // ── Web enrichment for missing location ─────────────────────────────────
-    let locationNote = null;
-    if (!props.city || !props.state) {
-      try {
-        const found = await enrichCompanyLocation(coName);
-        if (found.city || found.state) {
-          locationNote = [found.city, found.state].filter(Boolean).join(', ');
-        }
-      } catch { /* non-fatal */ }
-    }
-
-    // ── Conflict check ───────────────────────────────────────────────────────
-    const isConflict = expectedRep !== 'UNASSIGNED' &&
-      expectedRep.toLowerCase() !== currentOwnerName.toLowerCase();
-
-    // ── Store pending context ────────────────────────────────────────────────
-    const config = loadConfig();
-    const fixKey = makeFixKey();
-    setPendingFix(fixKey, {
-      companyId, companyName: coName, link: hsLink,
-      expectedRep, rule: resolution.rule,
-      workingRep: currentOwnerName,
-      repOwnerIds: config.repOwnerIds || {}
-    });
-
-    // ── Build blocks ─────────────────────────────────────────────────────────
-    const blocks = [
-      header('🔧 Fix — Ownership Resolution'),
-      section(
-        `*Company:* <${hsLink}|${coName}>\n` +
-        `*Market:* ${market || '_(missing — no city/state in HubSpot)_'}\n` +
-        `*Current owner:* ${currentOwnerName}`
-      ),
-      divider(),
-      section(
-        `${isConflict ? '⚠ *Conflict detected*' : '✅ Ownership looks correct'}\n` +
-        `*Should be:* *${expectedRep}*\n` +
-        `*Rule:* ${ruleLabel}\n` +
-        `*Explanation:* ${resolution.explanation}`
-      )
-    ];
-
-    if (locationNote) {
-      blocks.push(section(`📍 Web search found location: *${locationNote}*\nVerify this is correct before approving.`));
-    }
-
-    if (resolution.warnings.length > 0) {
-      blocks.push(section(resolution.warnings.map(w => `⚠ ${w}`).join('\n')));
-    }
-
-    if (expectedRep !== 'UNASSIGNED') {
-      blocks.push(divider());
-      blocks.push({
-        type: 'actions',
-        block_id: fixKey,
-        elements: [
-          {
-            type:      'button',
-            text:      { type: 'plain_text', text: `✅ Approve — Assign to ${expectedRep}`, emoji: true },
-            style:     'primary',
-            action_id: 'fix_approve',
-            value:     fixKey
-          },
-          {
-            type:      'button',
-            text:      { type: 'plain_text', text: '❌ Decline', emoji: true },
-            style:     'danger',
-            action_id: 'fix_decline',
-            value:     fixKey
-          }
-        ]
-      });
-    }
-
-    log('respond_sent', { cmd: '/fix', ms: Date.now() - t0, companyId, rule: resolution.rule, expectedRep, conflict: isConflict });
+    log('respond_sent', { cmd: '/lookup', ms: Date.now() - t0, query: text });
     await respond({ blocks, replace_original: true });
 
   } catch (err) {
-    log('error', { cmd: '/fix', ms: Date.now() - t0, error: err.message });
+    log('error', { cmd: '/lookup', ms: Date.now() - t0, error: err.message });
     await respond({ text: `❌ Error: ${err.message}`, replace_original: true });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// Interactive: Approve button
-// ---------------------------------------------------------------------------
-
-app.action('fix_approve', async ({ body, ack, respond }) => {
-  await ack();
-
-  const fixKey = body.actions[0].value;
-  const fix    = getPendingFix(fixKey);
-  const today  = new Date().toISOString().slice(0, 10);
-
-  if (!fix) {
-    await respond({ text: '❌ This action has expired or was already handled. Run `/fix` again.', replace_original: true });
-    return;
-  }
-
-  const { companyId, companyName, link, expectedRep, rule, repOwnerIds, workingRep } = fix;
-
-  // If multiple reps, pick the first one that has a mapped HubSpot owner ID
-  const reps       = expectedRep.split(' / ').map(r => r.trim());
-  const targetRep  = reps.find(r => repOwnerIds[r]) || reps[0];
-  const newOwnerId = repOwnerIds[targetRep] || null;
-
-  try {
-    let ruleWritten = true;
-    try { await ensureOwnershipRuleProperty(); } catch { ruleWritten = false; }
-
-    const update = {};
-    if (ruleWritten) update.landing_ownership_rule = rule;
-    if (newOwnerId)  update.hubspot_owner_id        = newOwnerId;
-    await updateCompany(companyId, update);
-
-    appendLog({
-      timestamp: new Date().toISOString(),
-      rule:      'OWNER_REASSIGNMENT',
-      action:    'accepted',
-      source:    'slack /fix',
-      companyId, companyName,
-      from:      workingRep,
-      to:        targetRep,
-      newOwnerId,
-      hsRule:    rule,
-      ruleWritten,
-      slackUser: body.user?.name || body.user?.id
-    });
-
-    pendingFixes.delete(fixKey);
-
-    const ruleNote = !ruleWritten
-      ? '\n⚠ `landing_ownership_rule` not written — add `crm.schemas.companies.write` scope to your HubSpot private app.'
-      : '';
-
-    await respond({
-      replace_original: true,
-      blocks: [
-        header('✅ Ownership Updated'),
-        section(
-          `*Company:* <${link}|${companyName}>\n` +
-          `*Assigned to:* *${targetRep}*\n` +
-          (ruleWritten ? `*Rule written:* \`${rule}\`\n` : '') +
-          `*Updated by:* ${body.user?.name || 'Unknown'} on ${today}` +
-          ruleNote
-        )
-      ]
-    });
-
-  } catch (err) {
-    await respond({ text: `❌ Failed to update HubSpot: ${err.message}`, replace_original: true });
-  }
-});
-
-// ---------------------------------------------------------------------------
-// Interactive: Decline button
-// ---------------------------------------------------------------------------
-
-app.action('fix_decline', async ({ body, ack, respond }) => {
-  await ack();
-
-  const fixKey = body.actions[0].value;
-  const fix    = getPendingFix(fixKey);
-  const today  = new Date().toISOString().slice(0, 10);
-
-  if (!fix) {
-    await respond({ text: '❌ This action has expired or was already handled. Run `/fix` again.', replace_original: true });
-    return;
-  }
-
-  const { companyId, companyName, link, expectedRep, rule, workingRep } = fix;
-  const ruleValue = `EXCEPTION — ${rule} declined by ${body.user?.name || 'user'} on ${today}`;
-
-  try {
-    let ruleWritten = true;
-    try { await ensureOwnershipRuleProperty(); } catch { ruleWritten = false; }
-    if (ruleWritten) await updateCompany(companyId, { landing_ownership_rule: ruleValue });
-
-    appendLog({
-      timestamp: new Date().toISOString(),
-      rule:      'OWNER_REASSIGNMENT',
-      action:    'declined',
-      source:    'slack /fix',
-      companyId, companyName,
-      from:      workingRep,
-      to:        expectedRep,
-      hsRule:    rule,
-      slackUser: body.user?.name || body.user?.id
-    });
-
-    pendingFixes.delete(fixKey);
-
-    await respond({
-      replace_original: true,
-      blocks: [
-        header('⏭ Assignment Declined'),
-        section(
-          `*Company:* <${link}|${companyName}>\n` +
-          `*Declined by:* ${body.user?.name || 'Unknown'} on ${today}\n` +
-          `*Rule written:* \`${ruleValue}\``
-        )
-      ]
-    });
-
-  } catch (err) {
-    await respond({ text: `❌ Failed to write exception: ${err.message}`, replace_original: true });
   }
 });
 
@@ -1210,12 +1194,6 @@ app.action('fix_decline', async ({ body, ack, respond }) => {
 // Startup
 // ---------------------------------------------------------------------------
 
-// Prevent unhandled promise rejections from crashing the process.
-// Bolt's action/command handlers are all wrapped in try/catch, but Belt itself
-// may surface unexpected rejections (e.g. network blips in respond()).
-process.on('unhandledRejection', (reason) => {
-  console.error('[unhandledRejection]', reason);
-});
 
 (async () => {
   try { await ensureOwnershipRuleProperty(); } catch { /* non-fatal */ }

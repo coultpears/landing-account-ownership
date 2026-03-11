@@ -22291,5 +22291,102 @@
     "warnings": [
       "Owner HQ not provided — using property market \"Seattle WA\" for regional assignment. Pass --hq if the owner is headquartered in a different state."
     ]
+  },
+  {
+    "timestamp": "2026-03-11T03:04:54.674Z",
+    "rule": "UNASSIGNED",
+    "ownerQuery": "kolter group",
+    "matchedOwner": null,
+    "ownerHQ": null,
+    "market": null,
+    "isLeaseUp": false,
+    "rep": null,
+    "conflict": false,
+    "warnings": [
+      "This lead is unassigned. Manual assignment required."
+    ]
+  },
+  {
+    "timestamp": "2026-03-11T03:04:55.529Z",
+    "rule": "STATE_FALLBACK",
+    "ownerQuery": "kolter group",
+    "matchedOwner": null,
+    "ownerHQ": null,
+    "market": "Palm Beach Gardens FL",
+    "isLeaseUp": false,
+    "rep": "Scout Bishop",
+    "conflict": false,
+    "warnings": [
+      "Owner HQ not provided — using property market \"Palm Beach Gardens FL\" for regional assignment. Pass --hq if the owner is headquartered in a different state."
+    ]
+  },
+  {
+    "timestamp": "2026-03-11T03:06:41.340Z",
+    "rule": "UNASSIGNED",
+    "ownerQuery": "the resmark companies",
+    "matchedOwner": null,
+    "ownerHQ": null,
+    "market": null,
+    "isLeaseUp": false,
+    "rep": null,
+    "conflict": false,
+    "warnings": [
+      "This lead is unassigned. Manual assignment required."
+    ]
+  },
+  {
+    "timestamp": "2026-03-11T03:06:42.133Z",
+    "rule": "STATE_FALLBACK",
+    "ownerQuery": "the resmark companies",
+    "matchedOwner": null,
+    "ownerHQ": null,
+    "market": "San Diego CA",
+    "isLeaseUp": false,
+    "rep": "Raegan Harris",
+    "conflict": false,
+    "warnings": [
+      "Owner HQ not provided — using property market \"San Diego CA\" for regional assignment. Pass --hq if the owner is headquartered in a different state."
+    ]
+  },
+  {
+    "timestamp": "2026-03-11T03:07:29.781Z",
+    "rule": "OWNER_REASSIGNMENT",
+    "action": "accepted",
+    "source": "slack /check",
+    "companyId": "30311145507",
+    "companyName": "the resmark companies",
+    "from": "(unassigned)",
+    "to": "Raegan Harris",
+    "newOwnerId": "80477558",
+    "hsRule": "STATE_FALLBACK",
+    "locationFilled": false,
+    "ruleWritten": true,
+    "slackUser": "matt"
+  },
+  {
+    "timestamp": "2026-03-11T03:18:45.268Z",
+    "rule": "UNASSIGNED",
+    "ownerQuery": "jherrmann@resmark.com",
+    "matchedOwner": null,
+    "ownerHQ": null,
+    "market": null,
+    "isLeaseUp": false,
+    "rep": null,
+    "conflict": false,
+    "warnings": [
+      "This lead is unassigned. Manual assignment required."
+    ]
+  },
+  {
+    "timestamp": "2026-03-11T03:31:18.105Z",
+    "rule": "STATE_FALLBACK",
+    "ownerQuery": "The Resmark Companies",
+    "matchedOwner": null,
+    "ownerHQ": "CA",
+    "market": "San Diego CA",
+    "isLeaseUp": false,
+    "rep": "Raegan Harris",
+    "conflict": false,
+    "warnings": []
   }
 ]
