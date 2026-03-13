@@ -46,9 +46,9 @@
   "stateAssignments": [
     {
       "rep": "Jack Thomasson",
-      "states": ["TN", "GA", "KY"],
+      "states": ["TN", "KY", "MS", "LA"],
       "subMarkets": [],
-      "assignedAt": "2026-01-01T00:00:00Z"
+      "assignedAt": "2026-03-01T00:00:00Z"
     },
     {
       "rep": "Wells Davis",
@@ -66,9 +66,9 @@
     },
     {
       "rep": "Scout Bishop",
-      "states": ["FL"],
+      "states": ["WA", "OR", "ID", "MT", "WY", "AK", "GA"],
       "subMarkets": [],
-      "assignedAt": "2026-01-01T00:00:00Z"
+      "assignedAt": "2026-03-01T00:00:00Z"
     },
     {
       "rep": "Ashtyn Garner",
@@ -86,33 +86,91 @@
     },
     {
       "rep": "Sophia Nadler",
-      "states": ["SC", "NC"],
+      "states": ["NC", "VA", "MD", "SC"],
       "subMarkets": [],
-      "assignedAt": "2026-01-01T00:00:00Z"
+      "assignedAt": "2026-03-01T00:00:00Z"
     },
     {
       "rep": "Richard Baugh",
-      "states": ["IL", "MI", "WI", "IN", "OH"],
+      "states": ["IL", "WI", "ND", "SD"],
       "subMarkets": [],
-      "assignedAt": "2026-01-01T00:00:00Z"
+      "assignedAt": "2026-03-01T00:00:00Z"
     },
     {
       "rep": "Raegan Harris",
-      "states": ["AL", "MS", "LA", "AR", "CA", "NM", "AZ", "NV"],
+      "states": ["NV", "NM", "OH"],
       "subMarkets": [],
-      "assignedAt": "2026-01-01T00:00:00Z"
+      "assignedAt": "2026-03-01T00:00:00Z"
+    },
+    {
+      "rep": "Raegan Harris",
+      "states": ["CA"],
+      "subMarkets": ["Los Angeles", "Long Beach", "Anaheim", "Santa Ana", "Irvine", "Glendale", "Pasadena", "Burbank", "Santa Monica", "Torrance", "Pomona", "Riverside", "San Bernardino", "Ontario", "Rancho Cucamonga", "Fontana", "Moreno Valley", "Corona", "Murrieta", "Temecula", "San Diego", "Chula Vista", "El Cajon", "Oceanside", "Escondido", "Carlsbad", "Bakersfield", "Oxnard", "Ventura", "Santa Barbara", "Palm Springs", "Victorville"],
+      "focus": "CA-South",
+      "assignedAt": "2026-03-01T00:00:00Z"
     },
     {
       "rep": "Ghislain Cossio",
-      "states": ["VA", "DC", "MD", "PA", "NJ", "NY", "CT", "MA"],
+      "states": ["DC", "CT"],
       "subMarkets": [],
-      "assignedAt": "2026-01-01T00:00:00Z"
+      "assignedAt": "2026-03-01T00:00:00Z"
+    },
+    {
+      "rep": "Ghislain Cossio",
+      "states": ["NY"],
+      "subMarkets": ["New York", "NYC", "Manhattan", "Brooklyn", "Queens", "Bronx", "Staten Island", "Yonkers", "White Plains", "Long Island", "Westchester", "New Rochelle", "Mount Vernon"],
+      "focus": "NY-South/NYC Metro",
+      "assignedAt": "2026-03-01T00:00:00Z"
     },
     {
       "rep": "Nolan Moran",
-      "states": ["OK", "KS", "NE", "ID", "MO", "WY", "MT", "IA", "OR", "WA", "UT", "CO", "MN"],
+      "states": ["CO", "UT", "IA", "KS", "NE", "MO"],
       "subMarkets": [],
-      "assignedAt": "2026-01-01T00:00:00Z"
+      "assignedAt": "2026-03-01T00:00:00Z"
+    },
+    {
+      "rep": "TBD (Rep 10)",
+      "states": ["AZ", "OK", "IN", "MN", "HI"],
+      "subMarkets": [],
+      "assignedAt": "2026-03-01T00:00:00Z",
+      "notes": "Placeholder - rep TBD"
+    },
+    {
+      "rep": "TBD (Rep 11)",
+      "states": ["MI", "AL", "AR"],
+      "subMarkets": [],
+      "assignedAt": "2026-03-01T00:00:00Z",
+      "notes": "Placeholder - rep TBD"
+    },
+    {
+      "rep": "TBD (Rep 12)",
+      "states": ["PA", "WV", "DE", "RI"],
+      "subMarkets": [],
+      "assignedAt": "2026-03-01T00:00:00Z",
+      "notes": "Placeholder - rep TBD"
+    },
+    {
+      "rep": "TBD (Rep 12)",
+      "states": ["NY"],
+      "subMarkets": ["Albany", "Syracuse", "Rochester", "Buffalo", "Utica", "Binghamton", "Ithaca", "Saratoga", "Poughkeepsie", "Newburgh", "Kingston", "Plattsburgh", "Schenectady"],
+      "focus": "NY-North/Upstate",
+      "assignedAt": "2026-03-01T00:00:00Z",
+      "notes": "Placeholder - rep TBD"
+    },
+    {
+      "rep": "TBD (Rep 13)",
+      "states": ["CA"],
+      "subMarkets": ["San Francisco", "Oakland", "San Jose", "Sacramento", "Fresno", "Stockton", "Modesto", "Santa Rosa", "Redding", "Fremont", "Hayward", "Sunnyvale", "Santa Clara", "Berkeley", "Concord", "Walnut Creek", "Palo Alto", "San Mateo", "South San Francisco", "Daly City", "Richmond"],
+      "focus": "CA-North",
+      "assignedAt": "2026-03-01T00:00:00Z",
+      "notes": "Placeholder - rep TBD"
+    },
+    {
+      "rep": "TBD (Rep 14)",
+      "states": ["NJ", "MA", "NH", "VT", "ME"],
+      "subMarkets": [],
+      "assignedAt": "2026-03-01T00:00:00Z",
+      "notes": "Placeholder - rep TBD"
     }
   ]
 }

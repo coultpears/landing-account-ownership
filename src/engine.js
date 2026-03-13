@@ -12,8 +12,7 @@ const DATA_DIR = path.join(__dirname, '..', 'data');
 function loadData() {
   const owners = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'owners.json'), 'utf8'));
   const assignments = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'assignments.json'), 'utf8'));
-  const markets = JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'markets.json'), 'utf8'));
-  return { owners, assignments, markets };
+  return { owners, assignments };
 }
 
 // ---------------------------------------------------------------------------
@@ -117,38 +116,6 @@ function fuzzyMatch(query, candidates, threshold = 0.4) {
   }
 
   return bestScore >= threshold ? best : null;
-}
-
-// ---------------------------------------------------------------------------
-// Top 20 MSA check
-// ---------------------------------------------------------------------------
-
-/**
- * Returns the matching MSA object if the market string falls within a Top 20
- * MSA, or null if it does not.
- *
- * Matching uses whole-word comparison: the market string is tokenized and each
- * keyword is checked as a full token match (or multi-word phrase match).
- * This prevents short keywords like "LA" from falsely matching inside words
- * like "Dallas" or "Orlando".
- */
-function getTop20MSA(market, markets) {
-  if (!market || !markets) return null;
-  const mLower = market.toLowerCase();
-  // Tokenize the market string for word-boundary checks
-  const mTokens = mLower.replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean);
-
-  for (const msa of markets.top20MSAs) {
-    const matched = msa.keywords.some(kw => {
-      const kwLower = kw.toLowerCase();
-      // Multi-word keywords: use substring match (phrase is specific enough)
-      if (kwLower.includes(' ')) return mLower.includes(kwLower);
-      // Single-word keywords: require exact token match to avoid false positives
-      return mTokens.includes(kwLower);
-    });
-    if (matched) return msa;
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -278,14 +245,15 @@ function logCheck(entry) {
  * Resolution hierarchy:
  *   0. Known non-Top-50 owner (disambiguation guard)   → skip Tier 1, fall through
  *   1. Top 50 owner                                    → Jack Harvey
- *   2. Lease-up + NOT Top 50 + no owner relationship   → Xander Williams
+ *   2. Lease-up + NOT Top 50                           → Xander Williams
+ *      — owner assignments do NOT block Xander; he still works the lease-up
  *   3. Owner-level assignment (beats market/state)     → assigned rep
  *      — covers ALL properties nationwide incl. referrals
  *   4. State-based regional fallback                   → state rep(s)
  *   5. Unassigned
  */
 function resolve(input) {
-  const { owners, assignments, markets } = loadData();
+  const { owners, assignments } = loadData();
   const { ownerName, market, isLeaseUp, ownerHQ } = input;
 
   const result = {
@@ -339,38 +307,28 @@ function resolve(input) {
   const ownerHit = fuzzyMatch(ownerName, ownerCandidates);
 
   // ── Tier 2: Xander Williams lease-up hunting ──────────────────────────────────────
-  // Xander Williams gets a lease-up property only when ALL three conditions are met:
-  //   a) Owner is NOT in the Top 50         (passed Tier 1)
-  //   b) No rep already owns this owner relationship
-  //   c) Property is in a Top 20 MSA
-  // If (b) or (c) fail, fall through — the property routes to the owner's rep
-  // or the regional rep instead.
+  // Xander Williams gets ANY lease-up property as long as the owner is NOT in
+  // the Top 50. Owner assignments do NOT block Xander — he still works the
+  // lease-up even if another rep owns the owner relationship.
   if (isLeaseUp) {
+    result.rep = 'Xander Williams';
+    result.rule = 'LEASE_UP';
+    result.explanation =
+      `Lease-up property${market ? ` in "${market}"` : ''}. ` +
+      `Owner "${ownerName}" is not in the Top 50. ` +
+      `Xander Williams works all lease-ups regardless of owner assignment or market.`;
+
     if (ownerHit) {
-      // Condition (b) fails: a rep owns this relationship — skip Xander Williams entirely,
-      // Tier 3 will assign to that rep.
-    } else {
-      const msa = getTop20MSA(market, markets);
-      if (msa) {
-        result.rep = 'Xander Williams';
-        result.rule = 'LEASE_UP';
-        result.explanation =
-          `Lease-up property in "${market}" (${msa.name} MSA). ` +
-          `Owner "${ownerName}" is not Top 50 and has no existing rep relationship. ` +
-          `All three Xander Williams conditions met — routes to Xander Williams.`;
-        finalize(result);
-        return result;
-      } else {
-        // Condition (c) fails: not a Top 20 MSA — fall through to regional rep
-        const msaNote = market
-          ? `"${market}" is not in a Top 20 MSA`
-          : `no market provided, cannot confirm Top 20 MSA`;
-        result.warnings.push(
-          `Lease-up flagged but ${msaNote}. Xander Williams is restricted to Top 20 MSAs. ` +
-          `Routing to regional rep instead.`
-        );
-      }
+      const assignment = ownerHit.match._raw;
+      result.warnings.push(
+        `Owner "${assignment.owner}" has an existing assignment to ${assignment.rep}, ` +
+        `but Xander Williams still works the lease-up property. ` +
+        `${assignment.rep} retains the owner relationship.`
+      );
     }
+
+    finalize(result);
+    return result;
   }
 
   // ── Tier 3: Owner-level assignment ───────────────────────────────────────

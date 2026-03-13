@@ -15,7 +15,7 @@ landing-account-ownership/
 ├── data/
 │   ├── owners.json       Top 50 owner list with attributes + aliases
 │   ├── assignments.json  Owner-level and state-based regional rep assignments
-│   ├── markets.json      Top 20 MSA definitions with keyword lists
+│   ├── markets.json      Top 20 MSA definitions (retained for reference, not used by engine)
 │   ├── config.json       Exclusion list + qualifying/non-MF industry lists
 │   ├── cache.json        Web-search enrichment cache (auto-maintained)
 │   └── log.json          Append-only audit log (resolve() checks + FIX writes)
@@ -42,7 +42,7 @@ Tiers are evaluated in order. **The first match wins.**
 | Tier | Rule | Assigned To |
 |------|------|-------------|
 | 1 | Owner is in the **Top 50** list | Jack Harvey |
-| 2 | Property is a **lease-up** AND all three Xander Williams conditions are met (see below) | Xander Williams |
+| 2 | Property is a **lease-up** AND owner is NOT Top 50 | Xander Williams |
 | 3 | Owner has an **owner-level assignment** (explicit partner relationship) | That rep |
 | 4 | **State-based regional fallback** based on property market | Regional rep(s) |
 | — | No match found | UNASSIGNED |
@@ -56,21 +56,16 @@ Tiers are evaluated in order. **The first match wins.**
 
 ## Xander Williams Lease-Up Rules (Tier 2)
 
-Xander Williams gets a lease-up property only when **all three conditions are met**:
+Xander Williams gets a lease-up property when **one condition is met**:
 
 1. The owner is **not** in the Top 50
-2. **No rep already owns** the owner relationship (not in `ownerAssignments`)
-3. The property is in a **Top 20 MSA** (defined in `data/markets.json`)
 
-If any condition fails, Tier 2 is skipped and the lead falls through to Tier 3 or 4:
-- Condition 1 fails → Tier 1 already caught it (Jack Harvey)
-- Condition 2 fails → Tier 3 assigns to the rep who owns that owner relationship
-- Condition 3 fails → Tier 4 assigns to the regional state rep, with a warning that the lease-up is outside Top 20 MSAs
+That's it. No MSA restrictions, no owner-assignment blocking:
+- **Owner assignments do NOT block Xander.** If another rep owns the owner relationship, Xander still works the lease-up property. The other rep retains the owner relationship.
+- **No geographic restrictions.** The previous Top 20 MSA requirement has been removed. Xander works lease-ups in any market.
+- If the owner IS Top 50 → Tier 1 already caught it (Jack Harvey), Xander is blocked.
 
-### Top 20 MSAs
-New York, Los Angeles, Chicago, Dallas-Fort Worth, Houston, Miami-Fort Lauderdale, Washington DC, Atlanta, Philadelphia, Phoenix, Boston, Riverside-San Bernardino, San Francisco, Detroit, Seattle, Minneapolis-St. Paul, Tampa, San Diego, Denver, Orlando
-
-MSA matching uses **whole-word token matching** against keyword lists in `data/markets.json`. Short single-letter abbreviations are excluded to prevent false matches (e.g. "LA" would match inside "Dallas").
+`data/markets.json` is retained in the repo but is no longer used by the resolution engine.
 
 ---
 
@@ -94,27 +89,43 @@ These override state/market for every property that owner has, anywhere in the c
 
 | Rep | States | Sub-market Focus |
 |-----|--------|-----------------|
-| **Jack Thomasson** | TN, GA, KY | — |
+| **Jack Thomasson** | TN, KY, MS, LA | — |
 | **Wells Davis** | TX | DFW & Austin |
 | **John LaVanway** | TX | Houston & San Antonio |
-| **Scout Bishop** | FL | All of Florida (general) |
+| **Scout Bishop** | WA, OR, ID, MT, WY, AK, GA | — |
 | **Ashtyn Garner** | FL | Fort Lauderdale focus |
 | **Renato Lagomarsino** | FL | Miami focus |
-| **Sophia Nadler** | SC, NC | — |
-| **Richard Baugh** | IL, MI, WI, IN, OH | — |
-| **Raegan Harris** | AL, MS, LA, AR, CA, NM, AZ, NV | — |
-| **Ghislain Cossio** | VA, DC, MD, PA, NJ, NY, CT, MA | — |
-| **Nolan Moran** | OK, KS, NE, ID, MO, WY, MT, IA, OR, WA, UT, CO, MN | — |
+| **Sophia Nadler** | NC, VA, MD, SC | — |
+| **Richard Baugh** | IL, WI, ND, SD | — |
+| **Raegan Harris** | CA-South, NV, NM, OH | CA-South focus |
+| **Ghislain Cossio** | NY-South/NYC Metro, DC, CT | NYC Metro focus |
+| **Nolan Moran** | CO, UT, IA, KS, NE, MO | — |
+
+### Placeholder Reps (TBD — March 2026)
+
+| Placeholder | States | Sub-market Focus |
+|-------------|--------|-----------------|
+| **TBD (Rep 10)** | AZ, OK, IN, MN, HI | — |
+| **TBD (Rep 11)** | MI, AL, AR | — |
+| **TBD (Rep 12)** | NY-North/Upstate, PA, WV, DE, RI | Upstate NY focus |
+| **TBD (Rep 13)** | CA-North | NorCal focus |
+| **TBD (Rep 14)** | NJ, MA, NH, VT, ME | — |
 
 ### Texas sub-market logic
 TX is split between Wells (DFW/Austin) and John (Houston/San Antonio). The engine matches the market string against sub-market keyword lists. If the city doesn't match either rep's focus area, both are returned with a coordination warning.
 
+### California sub-market logic
+CA is split between Raegan (South) and TBD Rep 13 (North). Both have sub-market keyword lists. If a CA city doesn't match either rep's keywords, both are returned with a coordination warning — same fallback behavior as TX.
+
+### New York sub-market logic
+NY is split between Ghislain (NYC Metro / South) and TBD Rep 12 (Upstate / North). Both have sub-market keyword lists. If an NY city doesn't match either rep's keywords, both are returned with a coordination warning.
+
 ### Florida sub-market logic
-FL has three reps. Scout covers all of Florida. Ashtyn and Renato cover focus markets within FL:
-- "Miami FL" → Scout + Renato
-- "Fort Lauderdale FL" → Scout + Ashtyn
-- "Tampa FL" → Scout only
-- "Orlando FL" → Scout only
+FL has two reps with sub-market focus areas. There is no general FL coverage rep:
+- "Miami FL" → Renato
+- "Fort Lauderdale FL" → Ashtyn
+- "Tampa FL" → both returned (fallback — no sub-market match), coordination warning
+- "Orlando FL" → both returned (fallback — no sub-market match), coordination warning
 
 ---
 
@@ -133,7 +144,7 @@ Two sections:
 - `stateAssignments` — array of `{ rep, states[], subMarkets[], focus }` entries
 
 ### `data/markets.json`
-Top 20 MSA definitions. Each entry has `id`, `name`, `states[]`, and `keywords[]`. Used exclusively for Xander Williams's Tier 2 eligibility check.
+Top 20 MSA definitions. Each entry has `id`, `name`, `states[]`, and `keywords[]`. Retained for reference but **no longer used by the resolution engine** — Xander Williams's MSA restriction was removed in March 2026.
 
 ### `data/log.json`
 Append-only. Every `resolve()` call writes: timestamp, rule triggered, owner query, matched owner, market, lease-up flag, assigned rep, conflict flag, warnings. The `fix` command also appends entries with `rule: "FIX"` containing before/after field values and source note.
@@ -207,10 +218,10 @@ node src/cli.js check "Camden"
 # With market (enables state fallback)
 node src/cli.js check "MAA" --market "Dallas TX"
 
-# Lease-up (triggers Xander Williams eligibility check)
+# Lease-up (routes to Xander Williams — any market, any non-Top-50 owner)
 node src/cli.js check "Unknown Owner" --market "Houston TX" --lease-up
 
-# Lease-up outside Top 20 MSA (Xander Williams blocked, routes to regional rep)
+# Lease-up in smaller market (still routes to Xander Williams — no MSA restriction)
 node src/cli.js check "Unknown Owner" --market "Bozeman MT" --lease-up
 
 # Owner-level assignment overrides market
@@ -262,9 +273,6 @@ Edit `stateAssignments` in `data/assignments.json`. Add `subMarkets[]` to restri
 
 ### Update Xander Williams's rep name
 In `src/engine.js`, change the string `'Xander Williams'` in the Tier 2 block.
-
-### Add a Top 20 MSA
-Append to `top20MSAs` in `data/markets.json` with `id`, `name`, `states[]`, and `keywords[]`. Use specific city/neighborhood names as keywords — avoid short abbreviations that could match inside other words.
 
 ### Suppress a company from conflict reports
 Add its name (partial match, case-insensitive) to `excludedCompanies` in `data/config.json`, or its domain to `excludedDomains`.
