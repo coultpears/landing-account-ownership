@@ -244,7 +244,7 @@ function logCheck(entry) {
  *
  * Resolution hierarchy:
  *   0. Known non-Top-50 owner (disambiguation guard)   → skip Tier 1, fall through
- *   1. Top 50 owner                                    → Jack Harvey
+ *   1. Top 50 owner (only if no dev manager owns it)    → Jack Harvey
  *   2. Lease-up + NOT Top 50                           → Xander Williams
  *      — owner assignments do NOT block Xander; he still works the lease-up
  *   3. Owner-level assignment (beats market/state)     → assigned rep
@@ -284,27 +284,42 @@ function resolve(input) {
     }
   }
 
-  // ── Tier 1: Top 50 ────────────────────────────────────────────────────────
-  const top50Hit = !skipTop50 && fuzzyMatch(ownerName, owners.top50);
-  if (top50Hit) {
-    result.rep = 'Jack Harvey';
-    result.rule = 'TOP_50';
-    result.matchedOwner = top50Hit.match.name;
-    result.explanation =
-      `"${ownerName}" matched Top 50 owner "${top50Hit.match.name}" ` +
-      `(${top50Hit.type} match, confidence ${pct(top50Hit.score)}). ` +
-      `All Top 50 owners are assigned to Jack Harvey regardless of market.`;
-    finalize(result);
-    return result;
-  }
-
-  // Build owner-level candidate list — used by both Tier 2 and Tier 3
+  // Build owner-level candidate list — used by Tier 1 override check, Tier 2, and Tier 3
   const ownerCandidates = assignments.ownerAssignments.map(a => ({
     name: a.owner,
     aliases: a.aliases || [],
     _raw: a
   }));
   const ownerHit = fuzzyMatch(ownerName, ownerCandidates);
+
+  // ── Tier 1: Top 50 ────────────────────────────────────────────────────────
+  // Top 50 owners route to Jack Harvey UNLESS a dev manager already owns the
+  // relationship via an owner-level assignment. If a non-Jack-Harvey
+  // ownerAssignment exists, the dev manager retains ownership — Jack Harvey
+  // does not override existing relationships.
+  const top50Hit = !skipTop50 && fuzzyMatch(ownerName, owners.top50);
+  if (top50Hit) {
+    const devManagerOverride = ownerHit && ownerHit.match._raw.rep !== 'Jack Harvey';
+    if (devManagerOverride) {
+      const assignment = ownerHit.match._raw;
+      result.warnings.push(
+        `"${ownerName}" matched Top 50 owner "${top50Hit.match.name}", but ` +
+        `dev manager ${assignment.rep} already owns this relationship. ` +
+        `Jack Harvey does not override existing dev manager ownership.`
+      );
+      // Fall through — Tier 3 will assign to the dev manager
+    } else {
+      result.rep = 'Jack Harvey';
+      result.rule = 'TOP_50';
+      result.matchedOwner = top50Hit.match.name;
+      result.explanation =
+        `"${ownerName}" matched Top 50 owner "${top50Hit.match.name}" ` +
+        `(${top50Hit.type} match, confidence ${pct(top50Hit.score)}). ` +
+        `No existing dev manager relationship — routes to Jack Harvey.`;
+      finalize(result);
+      return result;
+    }
+  }
 
   // ── Tier 2: Xander Williams lease-up hunting ──────────────────────────────────────
   // Xander Williams gets ANY lease-up property as long as the owner is NOT in

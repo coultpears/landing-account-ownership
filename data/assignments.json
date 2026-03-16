@@ -66,39 +66,39 @@
     },
     {
       "rep": "Scout Bishop",
-      "states": ["WA", "OR", "ID", "MT", "WY", "AK", "GA"],
+      "states": ["GA", "VA", "MD", "DC", "MT", "WY", "AK"],
       "subMarkets": [],
       "assignedAt": "2026-03-01T00:00:00Z"
     },
     {
       "rep": "Ashtyn Garner",
       "states": ["FL"],
-      "subMarkets": ["Fort Lauderdale", "Broward", "Boca Raton", "Pompano Beach", "Deerfield Beach", "Coral Springs"],
-      "focus": "Fort Lauderdale",
-      "assignedAt": "2026-01-01T00:00:00Z"
+      "subMarkets": ["Fort Lauderdale", "Broward", "Pompano Beach", "Deerfield Beach", "Coral Springs", "Tampa", "St. Petersburg", "Saint Petersburg", "Clearwater", "Brandon", "Lakeland", "Sarasota", "Bradenton", "Fort Myers", "Naples", "Cape Coral", "Bonita Springs", "Pensacola", "Tallahassee", "Panama City", "Destin"],
+      "focus": "FL - West",
+      "assignedAt": "2026-03-01T00:00:00Z"
     },
     {
       "rep": "Renato Lagomarsino",
       "states": ["FL"],
-      "subMarkets": ["Miami", "Dade", "Coral Gables", "Brickell", "Hialeah", "Homestead", "Aventura", "North Miami"],
-      "focus": "Miami",
-      "assignedAt": "2026-01-01T00:00:00Z"
+      "subMarkets": ["Miami", "Dade", "Coral Gables", "Brickell", "Hialeah", "Homestead", "Aventura", "North Miami", "West Palm Beach", "Palm Beach", "Boca Raton", "Boynton Beach", "Delray Beach", "Jupiter", "Orlando", "Kissimmee", "Sanford", "Jacksonville", "Gainesville", "Melbourne", "Daytona", "Daytona Beach", "Ocala", "Port St. Lucie", "Stuart"],
+      "focus": "FL - East",
+      "assignedAt": "2026-03-01T00:00:00Z"
     },
     {
       "rep": "Sophia Nadler",
-      "states": ["NC", "VA", "MD", "SC"],
+      "states": ["NC", "SC", "WA", "OR", "ID"],
       "subMarkets": [],
       "assignedAt": "2026-03-01T00:00:00Z"
     },
     {
       "rep": "Richard Baugh",
-      "states": ["IL", "WI", "ND", "SD"],
+      "states": ["IL", "OH", "WI", "ND", "SD"],
       "subMarkets": [],
       "assignedAt": "2026-03-01T00:00:00Z"
     },
     {
       "rep": "Raegan Harris",
-      "states": ["NV", "NM", "OH"],
+      "states": ["NV", "NM"],
       "subMarkets": [],
       "assignedAt": "2026-03-01T00:00:00Z"
     },
@@ -111,7 +111,7 @@
     },
     {
       "rep": "Ghislain Cossio",
-      "states": ["DC", "CT"],
+      "states": ["CT", "PA"],
       "subMarkets": [],
       "assignedAt": "2026-03-01T00:00:00Z"
     },
@@ -144,7 +144,7 @@
     },
     {
       "rep": "TBD (Rep 12)",
-      "states": ["PA", "WV", "DE", "RI"],
+      "states": ["WV", "DE", "RI"],
       "subMarkets": [],
       "assignedAt": "2026-03-01T00:00:00Z",
       "notes": "Placeholder - rep TBD"

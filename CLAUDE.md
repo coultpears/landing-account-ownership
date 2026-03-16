@@ -41,16 +41,16 @@ Tiers are evaluated in order. **The first match wins.**
 
 | Tier | Rule | Assigned To |
 |------|------|-------------|
-| 1 | Owner is in the **Top 50** list | Jack Harvey |
+| 1 | Owner is in the **Top 50** list AND no dev manager already owns it | Jack Harvey |
 | 2 | Property is a **lease-up** AND owner is NOT Top 50 | Xander Williams |
 | 3 | Owner has an **owner-level assignment** (explicit partner relationship) | That rep |
 | 4 | **State-based regional fallback** based on property market | Regional rep(s) |
 | — | No match found | UNASSIGNED |
 
 ### Key rules
-- **Tier 1 always wins.** Top 50 owners go to Jack Harvey regardless of market, lease-up status, or any other factor.
+- **Tier 1 defers to existing dev managers.** Top 50 owners go to Jack Harvey UNLESS a dev manager (regional rep) already has an owner-level assignment for that owner. If a dev manager owns the relationship, they retain it — Jack Harvey does not override.
 - **Tier 3 beats Tier 4.** Owner-level assignments cover **all properties for that owner nationwide**, including referrals, regardless of what state or market the property is in.
-- **Xander Williams operates at the property level**, not the owner level. He hunts individual lease-up properties — not owner relationships.
+- **Xander Williams operates at the property level**, not the owner level. He hunts individual lease-up properties — not owner relationships. Comp handling (50/100 split on owner conflict) is a business process, not an engine block.
 
 ---
 
@@ -92,13 +92,13 @@ These override state/market for every property that owner has, anywhere in the c
 | **Jack Thomasson** | TN, KY, MS, LA | — |
 | **Wells Davis** | TX | DFW & Austin |
 | **John LaVanway** | TX | Houston & San Antonio |
-| **Scout Bishop** | WA, OR, ID, MT, WY, AK, GA | — |
-| **Ashtyn Garner** | FL | Fort Lauderdale focus |
-| **Renato Lagomarsino** | FL | Miami focus |
-| **Sophia Nadler** | NC, VA, MD, SC | — |
-| **Richard Baugh** | IL, WI, ND, SD | — |
-| **Raegan Harris** | CA-South, NV, NM, OH | CA-South focus |
-| **Ghislain Cossio** | NY-South/NYC Metro, DC, CT | NYC Metro focus |
+| **Scout Bishop** | GA, VA, MD, DC, MT, WY, AK | — |
+| **Ashtyn Garner** | FL | FL - West (Gulf Coast + Panhandle) |
+| **Renato Lagomarsino** | FL | FL - East (East Coast + Central + North) |
+| **Sophia Nadler** | NC, SC, WA, OR, ID | — |
+| **Richard Baugh** | IL, OH, WI, ND, SD | — |
+| **Raegan Harris** | CA-South, NV, NM | CA-South focus |
+| **Ghislain Cossio** | NY-South/NYC Metro, CT, PA | NYC Metro focus |
 | **Nolan Moran** | CO, UT, IA, KS, NE, MO | — |
 
 ### Placeholder Reps (TBD — March 2026)
@@ -107,25 +107,32 @@ These override state/market for every property that owner has, anywhere in the c
 |-------------|--------|-----------------|
 | **TBD (Rep 10)** | AZ, OK, IN, MN, HI | — |
 | **TBD (Rep 11)** | MI, AL, AR | — |
-| **TBD (Rep 12)** | NY-North/Upstate, PA, WV, DE, RI | Upstate NY focus |
+| **TBD (Rep 12)** | NY-North/Upstate, WV, DE, RI | Upstate NY focus |
 | **TBD (Rep 13)** | CA-North | NorCal focus |
 | **TBD (Rep 14)** | NJ, MA, NH, VT, ME | — |
 
 ### Texas sub-market logic
 TX is split between Wells (DFW/Austin) and John (Houston/San Antonio). The engine matches the market string against sub-market keyword lists. If the city doesn't match either rep's focus area, both are returned with a coordination warning.
 
+### Florida sub-market logic
+FL is split into two corridors. Both reps have sub-market keyword lists — the engine matches market strings against them:
+- **Ashtyn Garner (FL - West):** Fort Lauderdale metro, Tampa Bay, Sarasota, Fort Myers/Naples, Pensacola, Tallahassee, Panama City
+- **Renato Lagomarsino (FL - East):** Core Miami, West Palm Beach, Boca Raton, Orlando, Jacksonville, Gainesville, Melbourne, Daytona
+
+Examples:
+- "Miami FL" → Renato
+- "Orlando FL" → Renato
+- "Jacksonville FL" → Renato
+- "Tampa FL" → Ashtyn
+- "Fort Lauderdale FL" → Ashtyn
+- "Pensacola FL" → Ashtyn
+- "Key West FL" → both returned (fallback — no sub-market match), coordination warning
+
 ### California sub-market logic
 CA is split between Raegan (South) and TBD Rep 13 (North). Both have sub-market keyword lists. If a CA city doesn't match either rep's keywords, both are returned with a coordination warning — same fallback behavior as TX.
 
 ### New York sub-market logic
 NY is split between Ghislain (NYC Metro / South) and TBD Rep 12 (Upstate / North). Both have sub-market keyword lists. If an NY city doesn't match either rep's keywords, both are returned with a coordination warning.
-
-### Florida sub-market logic
-FL has two reps with sub-market focus areas. There is no general FL coverage rep:
-- "Miami FL" → Renato
-- "Fort Lauderdale FL" → Ashtyn
-- "Tampa FL" → both returned (fallback — no sub-market match), coordination warning
-- "Orlando FL" → both returned (fallback — no sub-market match), coordination warning
 
 ---
 
@@ -181,7 +188,7 @@ The CLI automatically fills in missing context before running resolution. Enrich
 
 ### What gets discovered and used
 - **Owner name** — replaces the property name query for resolution
-- **Market** — enables Xander Williams MSA check and state fallback
+- **Market** — enables state fallback for regional assignment
 - **Owner HQ** — drives Tier 4 regional assignment (owner's state, not property state)
 - **Property class** — passed to the qualification gate if the user didn't supply `--class`; "luxury" maps to Class A; affordable/LIHTC signals to disqualify
 
