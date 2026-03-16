@@ -1053,7 +1053,7 @@ function buildTerritoryBlocks(repName) {
   return blocks;
 }
 
-app.command('/lookup', async ({ command, ack, respond, client }) => {
+app.command('/lookup', async ({ command, ack, respond }) => {
   const t0 = Date.now();
   log('cmd_received', { cmd: '/lookup', user: command.user_name, text: command.text });
 
@@ -1065,60 +1065,25 @@ app.command('/lookup', async ({ command, ack, respond, client }) => {
     await respond(
       'Usage: `/lookup [name, email, or record ID]`\n' +
       'Searches HubSpot deals, companies, and contacts.\n' +
-      'Also: `/lookup me` or `/lookup [rep name]` to see territory assignments.\n' +
-      'Examples: `/lookup 8924545632` · `/lookup Greystar` · `/lookup john@example.com` · `/lookup me`'
+      'Examples: `/lookup 8924545632` · `/lookup Greystar` · `/lookup john@example.com` · `/lookup Scout`'
     );
     log('respond_sent', { cmd: '/lookup', ms: Date.now() - t0, result: 'usage' });
     return;
   }
 
   // ── Rep territory lookup ────────────────────────────────────────────────
-  // Matches: "me", "my territory", or a rep name
-  const lower = text.toLowerCase().trim();
-  const isSelf = ['me', 'my territory', 'my states', 'territory'].includes(lower);
-
-  let territoryRep = null;
-
-  if (isSelf) {
-    // Resolve calling user to rep name
-    try {
-      const info = await client.users.info({ user: command.user_id });
-      const real = info.user?.profile?.real_name || info.user?.real_name || '';
-      territoryRep = slackUserToRep(command.user_id, command.user_name, real);
-    } catch {
-      territoryRep = slackUserToRep(command.user_id, command.user_name, null);
-    }
-    if (!territoryRep) {
-      await respond(
-        `❌ Your Slack account isn't mapped to a rep yet.\n\n` +
-        `Type \`/lookup [rep name]\` to look up a specific rep's territory, or send your Slack user ID to *Matt Pears* to get mapped.\n` +
-        `Your user ID: \`${command.user_id}\``
-      );
-      log('respond_sent', { cmd: '/lookup', ms: Date.now() - t0, result: 'no_rep_mapping' });
-      return;
-    }
-  } else if (!/^\d+$/.test(text) && !text.includes('@')) {
-    // Not an ID or email — check if it matches a rep name
-    const needle = lower;
-    const match = KNOWN_REPS.find(r => r.toLowerCase() === needle)
+  // If the input matches a rep name, show their territory.
+  if (!/^\d+$/.test(text) && !text.includes('@')) {
+    const needle = text.toLowerCase().trim();
+    const repMatch = KNOWN_REPS.find(r => r.toLowerCase() === needle)
       || KNOWN_REPS.find(r => r.toLowerCase().includes(needle))
       || KNOWN_REPS.find(r => needle.split(/\s+/).some(w => w.length >= 3 && r.toLowerCase().includes(w)));
-    if (match) {
-      // Verify this is actually a rep lookup, not a company name that happens to match
-      // Only treat as rep lookup if the match is strong (exact or full substring)
-      const matchLower = match.toLowerCase();
-      const isStrongMatch = matchLower === needle
-        || matchLower.includes(needle)
-        || needle.includes(matchLower);
-      if (isStrongMatch) territoryRep = match;
+    if (repMatch) {
+      const blocks = buildTerritoryBlocks(repMatch);
+      log('respond_sent', { cmd: '/lookup', ms: Date.now() - t0, result: 'territory', rep: repMatch });
+      await respond({ blocks, replace_original: true });
+      return;
     }
-  }
-
-  if (territoryRep) {
-    const blocks = buildTerritoryBlocks(territoryRep);
-    log('respond_sent', { cmd: '/lookup', ms: Date.now() - t0, result: 'territory', rep: territoryRep });
-    await respond({ blocks, replace_original: true });
-    return;
   }
 
   await respond({ response_type: 'ephemeral', text: `_Looking up *${text}*…_` });
