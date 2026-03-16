@@ -997,9 +997,63 @@ app.command('/audit', async ({ command, ack, respond, client }) => {
 
 // ---------------------------------------------------------------------------
 // /lookup — lightweight HubSpot record lookup (deal, company, or contact)
+//           Also supports rep territory lookup: /lookup me, /lookup Scout Bishop
 // ---------------------------------------------------------------------------
 
-app.command('/lookup', async ({ command, ack, respond }) => {
+function loadAssignments() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, 'data', 'assignments.json'), 'utf8'));
+  } catch { return { stateAssignments: [], ownerAssignments: [] }; }
+}
+
+/**
+ * Build a territory summary card for a rep.
+ * Collects all stateAssignment entries for that rep and formats them.
+ */
+function buildTerritoryBlocks(repName) {
+  const assignments = loadAssignments();
+  const entries = assignments.stateAssignments.filter(
+    a => a.rep.toLowerCase() === repName.toLowerCase()
+  );
+
+  if (entries.length === 0) {
+    return [
+      header(`📍 Territory: ${repName}`),
+      section(`_No state assignments found for ${repName}._`)
+    ];
+  }
+
+  const blocks = [header(`📍 Territory: ${repName}`)];
+
+  for (const entry of entries) {
+    const states = entry.states.join(', ');
+    const focus = entry.focus || null;
+    const subs = (entry.subMarkets && entry.subMarkets.length > 0)
+      ? entry.subMarkets.slice(0, 15).join(', ') + (entry.subMarkets.length > 15 ? ` (+${entry.subMarkets.length - 15} more)` : '')
+      : null;
+
+    let line = `*States:* ${states}`;
+    if (focus) line += `\n*Focus:* ${focus}`;
+    if (subs)  line += `\n*Sub-markets:* ${subs}`;
+    blocks.push(section(line));
+  }
+
+  // Owner-level assignments
+  const ownerEntries = assignments.ownerAssignments.filter(
+    a => a.rep.toLowerCase() === repName.toLowerCase()
+  );
+  if (ownerEntries.length > 0) {
+    const ownerList = ownerEntries.map(a => a.owner).join(', ');
+    blocks.push(section(`*Owner-level assignments:* ${ownerList}`));
+  }
+
+  blocks.push(divider());
+  blocks.push(section('_Use `/check [name]` for ownership resolution · `/audit` for conflict audit_'));
+
+  return blocks;
+}
+
+app.command('/lookup', async ({ command, ack, respond, client }) => {
   const t0 = Date.now();
   log('cmd_received', { cmd: '/lookup', user: command.user_name, text: command.text });
 
@@ -1011,9 +1065,59 @@ app.command('/lookup', async ({ command, ack, respond }) => {
     await respond(
       'Usage: `/lookup [name, email, or record ID]`\n' +
       'Searches HubSpot deals, companies, and contacts.\n' +
-      'Examples: `/lookup 8924545632` · `/lookup Greystar` · `/lookup john@example.com`'
+      'Also: `/lookup me` or `/lookup [rep name]` to see territory assignments.\n' +
+      'Examples: `/lookup 8924545632` · `/lookup Greystar` · `/lookup john@example.com` · `/lookup me`'
     );
     log('respond_sent', { cmd: '/lookup', ms: Date.now() - t0, result: 'usage' });
+    return;
+  }
+
+  // ── Rep territory lookup ────────────────────────────────────────────────
+  // Matches: "me", "my territory", or a rep name
+  const lower = text.toLowerCase().trim();
+  const isSelf = ['me', 'my territory', 'my states', 'territory'].includes(lower);
+
+  let territoryRep = null;
+
+  if (isSelf) {
+    // Resolve calling user to rep name
+    try {
+      const info = await client.users.info({ user: command.user_id });
+      const real = info.user?.profile?.real_name || info.user?.real_name || '';
+      territoryRep = slackUserToRep(command.user_id, command.user_name, real);
+    } catch {
+      territoryRep = slackUserToRep(command.user_id, command.user_name, null);
+    }
+    if (!territoryRep) {
+      await respond(
+        `❌ Your Slack account isn't mapped to a rep yet.\n\n` +
+        `Type \`/lookup [rep name]\` to look up a specific rep's territory, or send your Slack user ID to *Matt Pears* to get mapped.\n` +
+        `Your user ID: \`${command.user_id}\``
+      );
+      log('respond_sent', { cmd: '/lookup', ms: Date.now() - t0, result: 'no_rep_mapping' });
+      return;
+    }
+  } else if (!/^\d+$/.test(text) && !text.includes('@')) {
+    // Not an ID or email — check if it matches a rep name
+    const needle = lower;
+    const match = KNOWN_REPS.find(r => r.toLowerCase() === needle)
+      || KNOWN_REPS.find(r => r.toLowerCase().includes(needle))
+      || KNOWN_REPS.find(r => needle.split(/\s+/).some(w => w.length >= 3 && r.toLowerCase().includes(w)));
+    if (match) {
+      // Verify this is actually a rep lookup, not a company name that happens to match
+      // Only treat as rep lookup if the match is strong (exact or full substring)
+      const matchLower = match.toLowerCase();
+      const isStrongMatch = matchLower === needle
+        || matchLower.includes(needle)
+        || needle.includes(matchLower);
+      if (isStrongMatch) territoryRep = match;
+    }
+  }
+
+  if (territoryRep) {
+    const blocks = buildTerritoryBlocks(territoryRep);
+    log('respond_sent', { cmd: '/lookup', ms: Date.now() - t0, result: 'territory', rep: territoryRep });
+    await respond({ blocks, replace_original: true });
     return;
   }
 

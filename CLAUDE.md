@@ -26,7 +26,7 @@ landing-account-ownership/
 │   ├── hubspot.js        HubSpot API wrapper (read + PATCH companies, deals, engagements)
 │   ├── audit.js          HubSpot conflict detection (audit / audit-all logic)
 │   └── cli.js            CLI interface (check, audit, audit-all, fix)
-├── server.js             Slack bot (Phase 3) — /check, /audit-me, /fix slash commands
+├── server.js             Slack bot (Phase 3) — /check, /audit, /lookup, /fix slash commands
 ├── Dockerfile            Container image for Cloud Run deployment
 ├── .env                  Local secrets — HUBSPOT_TOKEN, SLACK_BOT_TOKEN, etc. (not committed)
 ├── .env.example          Template for .env setup
@@ -409,6 +409,7 @@ A lightweight Slack bot (`server.js`) that exposes the ownership engine, audit p
 |---------|-------------|
 | `/check [owner or property name]` | Full ownership resolution: fuzzy match, web enrichment, qualify, resolve. Returns rule, assigned rep, explanation, and HubSpot record link. Web search fires automatically when UNASSIGNED or when HubSpot record is missing city/state — uses domain from HubSpot to scrape company website for location when DuckDuckGo API returns nothing. Enrichment button appears when web search finds location data that HubSpot is missing. |
 | `/audit [rep name] [days]` | Conflict audit for any rep. No name = audits the calling user. Supports fuzzy rep matching and flexible days syntax (`/audit scout 30`, `/audit sophia last 30 days`). Default: 90 days. Shows activity overview (deals, emails, calls, meetings, tasks), avg touchpoints per deal stage (sorted by pipeline order), and top 14 conflicts with inline assign buttons + dropdown for manual override. |
+| `/lookup [name, email, ID, or rep]` | Searches HubSpot deals, companies, and contacts. Also supports rep territory lookup: `/lookup me` shows the calling user's territory, `/lookup Scout` shows that rep's assigned states and sub-markets. |
 | `/fix [record ID or company name]` | Looks up the HubSpot record, runs resolution, shows current vs correct owner with an **Approve** and **Decline** button. Approve updates `hubspot_owner_id` + writes `landing_ownership_rule`. Decline writes the EXCEPTION note. |
 
 ### Setup
