@@ -236,12 +236,20 @@ async function auditRep(repName, {
   }
 
   // ── Engagements (for company-level conflict detection) ────────────────────
+  // Emails are capped at 200 — HubSpot auto-logs received, sequence, and
+  // marketing emails under the rep's owner ID, inflating the count well past
+  // 1000. 200 recent emails is enough to identify active companies without
+  // pulling in noise. Other types use the default 1000 cap.
+  const ENGAGEMENT_CAPS = { calls: 1000, emails: 200, meetings: 1000, tasks: 1000 };
+
   for (const type of ['calls', 'emails', 'meetings', 'tasks']) {
     log(`  Fetching ${type}...`);
-    const engagements = await getEngagementsByOwner(type, ownerId, daysBack);
+    const cap = ENGAGEMENT_CAPS[type];
+    const engagements = await getEngagementsByOwner(type, ownerId, daysBack, cap);
     summary[type] = engagements.length;
     summary.totalActivities += engagements.length;
-    log(`    ${engagements.length} ${type}`);
+    const truncated = engagements.length >= cap;
+    log(`    ${engagements.length} ${type}${truncated ? ` (capped at ${cap})` : ''}`);
 
     if (engagements.length) {
       const tsByEng = Object.fromEntries(

@@ -170,7 +170,7 @@ const ENGAGEMENT_PROPS = {
   tasks:    ['hs_task_subject', 'hs_timestamp']
 };
 
-async function getEngagementsByOwner(type, ownerId, daysBack = 90) {
+async function getEngagementsByOwner(type, ownerId, daysBack = 90, maxResults = 1000) {
   const cutoff = Date.now() - daysBack * 24 * 60 * 60 * 1000;
   return searchAll(
     type,
@@ -178,7 +178,8 @@ async function getEngagementsByOwner(type, ownerId, daysBack = 90) {
       { propertyName: 'hubspot_owner_id', operator: 'EQ',  value: String(ownerId) },
       { propertyName: 'hs_timestamp',     operator: 'GTE', value: String(cutoff) }
     ]}],
-    ENGAGEMENT_PROPS[type] || ['hs_timestamp']
+    ENGAGEMENT_PROPS[type] || ['hs_timestamp'],
+    maxResults
   );
 }
 

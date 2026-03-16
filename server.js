@@ -888,7 +888,7 @@ app.command('/audit', async ({ command, ack, respond, client }) => {
     // ── Activity summary line ──────────────────────────────────────────────
     const actParts = [];
     if (summary.deals)    actParts.push(`${summary.deals} deal${summary.deals !== 1 ? 's' : ''}`);
-    if (summary.emails)   actParts.push(`${summary.emails} email${summary.emails !== 1 ? 's' : ''}`);
+    if (summary.emails)   actParts.push(`${summary.emails}${summary.emails >= 200 ? '+' : ''} email${summary.emails !== 1 ? 's' : ''}`);
     if (summary.calls)    actParts.push(`${summary.calls} call${summary.calls !== 1 ? 's' : ''}`);
     if (summary.meetings) actParts.push(`${summary.meetings} meeting${summary.meetings !== 1 ? 's' : ''}`);
     if (summary.tasks)    actParts.push(`${summary.tasks} task${summary.tasks !== 1 ? 's' : ''}`);
