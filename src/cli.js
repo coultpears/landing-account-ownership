@@ -9,7 +9,7 @@
  *   npm run check -- <owner> [options]
  *
  * Options:
- *   --market <market>     Property location, e.g. "Dallas TX" (used for Xander Williams MSA check)
+ *   --market <market>     Property location, e.g. "Dallas TX" (used for state fallback)
  *   --hq <location>       Owner HQ state, e.g. "VA", "Virginia", "McLean VA"
  *   --lease-up            Flag property as lease-up
  *   --class <class>       e.g. "Class A", "Class B"
@@ -203,7 +203,7 @@ ${BOLD}Usage:${RESET}
   npm run check -- <owner> [options]
 
 ${BOLD}Options:${RESET}
-  --market <market>   Property location, e.g. "Dallas TX" (used for Xander Williams MSA check)
+  --market <market>   Property location, e.g. "Dallas TX" (used for state fallback)
   --hq <location>     Owner HQ state, e.g. "VA", "Virginia", "McLean VA"
   --lease-up          Flag the property as a lease-up
   --class <class>     Property class, e.g. "Class A", "Class B"
@@ -211,7 +211,7 @@ ${BOLD}Options:${RESET}
 
 ${BOLD}Resolution hierarchy:${RESET}
   1. Top 50 owner              → Jack Harvey (always, regardless of market)
-  2. Lease-up (3 conditions)   → Xander Williams (not Top 50, no owner relationship, Top 20 MSA)
+  2. Lease-up + not Top 50     → Xander Williams (any market, owner assignments don't block)
   3. Owner-level assignment    → that rep, nationwide including referrals
   4. State/regional fallback   → rep for owner's HQ state (--hq), or property market if HQ unknown
 
