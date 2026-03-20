@@ -1,0 +1,50 @@
+[
+  {
+    "id": 1,
+    "query": "how many pitches this week",
+    "correction": "When the user asks about pitches within a time window, use pitch_only:true AND days:N. The tool filters by actual pitch date, not just HAS_PROPERTY. Always report the filtered count, not total pipeline count.",
+    "date": "2026-03-18"
+  },
+  {
+    "id": 2,
+    "query": "who is performing best / team rankings",
+    "correction": "ALWAYS call get_pipeline_data() with NO rep filter first to get repSummary covering all reps. Never answer a team-wide question using only reps from prior conversation context. If the question is about 'this week', pass days:7.",
+    "date": "2026-03-18"
+  },
+  {
+    "id": 3,
+    "query": "which rep is trending better this week",
+    "correction": "Pipeline data alone is not enough for activity trends. For a complete picture, also call get_rep_activity for the top reps to compare engagements (calls, emails, meetings). Pipeline repSummary shows deal counts but not engagement volume.",
+    "date": "2026-03-18"
+  },
+  {
+    "id": 4,
+    "query": "rep not showing in results (e.g. Richard missing)",
+    "correction": "Some reps may not appear in get_pipeline_data if they have no AP pipeline deals. When doing team-wide comparisons, check the repSummary against the known reps list and call get_rep_activity for any missing reps.",
+    "date": "2026-03-18"
+  },
+  {
+    "id": 5,
+    "query": "any query that references deals",
+    "correction": "EVERY deal mentioned in the response MUST include its HubSpot link formatted as <link|deal name>. Tool results include a 'link' field for every deal — always use it. Never mention a deal by name without its clickable link.",
+    "date": "2026-03-18"
+  },
+  {
+    "id": 6,
+    "query": "pitches / pitch count / pitch activity",
+    "correction": "A 'pitch' is NOT an engagement (call, email, meeting, task). A pitch is a deal-level milestone tracked by the HubSpot deal property 'First Pitch Date (AP)' (first_pitch_date__ap_). When the user asks about pitches, use get_pipeline_data with pitch_only:true — this filters to deals that have the first_pitch_date__ap_ property set. The pitch DATE is the value of that field, not the deal create date or last modified date. Never count calls or meetings as pitches.",
+    "date": "2026-03-18"
+  },
+  {
+    "id": 7,
+    "query": "what closed this week / recent wins / deals closed",
+    "correction": "When get_pipeline_data is called with a days parameter, the response includes a 'timeWindow' object with time-scoped metrics. ALWAYS use timeWindow.recentWins for 'closed this week/month' questions — NOT the top-level closedWon which is ALL-TIME. The closedWon stage entry date (hs_v2_date_entered_126194579) determines when a deal actually closed, not the closedate field. timeWindow.recentRepActivity has per-rep breakdowns scoped to the window.",
+    "date": "2026-03-18"
+  },
+  {
+    "id": 8,
+    "query": "most likely to close / closing next / closest to close",
+    "correction": "Close likelihood is determined by PIPELINE STAGE, not pitch recency. Deals in Contract Redline are closest to close, then Contract Discussions, then Late Stage Opportunities. A deal that was pitched yesterday but is in New Opportunities is NOT close to closing. Always look at the stage distribution first and find deals in the latest stages. Time-in-stage is a secondary factor — shorter time in a late stage = more likely to close soon.",
+    "date": "2026-03-19"
+  }
+]
