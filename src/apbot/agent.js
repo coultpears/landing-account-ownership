@@ -23,6 +23,8 @@ const path = require('path');
 const { executeTool } = require('./tools');
 const { KNOWN_REPS }  = require('../audit');
 const { getMemory, saveMemory, clearMemory } = require('./analyst');
+const { loadLearnings: loadLearningsFromStorage, saveLearnings: saveLearningsToStorage } = require('./storage');
+const { createTrace, logGeneration, logToolCall, finalizeTrace, flush: flushTraces } = require('./observability');
 
 // ---------------------------------------------------------------------------
 // Anthropic client
@@ -43,26 +45,39 @@ function getClient() {
 // ---------------------------------------------------------------------------
 
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
-const LEARNINGS_PATH = path.join(DATA_DIR, 'apbot-learnings.json');
 
 function loadConfig() {
   try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, 'config.json'), 'utf8')); }
   catch { return { slackToRep: {} }; }
 }
 
-function loadLearnings() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(LEARNINGS_PATH, 'utf8'));
-    return raw.map(l => `- ${l.correction}`).join('\n');
-  } catch { return ''; }
+// In-memory cache of learnings — loaded from GCS on first use
+let _learningsCache = null;
+let _learningsLoaded = false;
+
+/**
+ * Load learnings formatted for system prompt injection.
+ * Uses GCS when available, falls back to local fs.
+ */
+async function loadLearnings() {
+  if (!_learningsLoaded) {
+    _learningsCache = await loadLearningsFromStorage();
+    _learningsLoaded = true;
+  }
+  if (!_learningsCache || _learningsCache.length === 0) return '';
+  return _learningsCache.map(l => `- ${l.correction}`).join('\n');
 }
 
 /**
  * Save a new learning from user correction.
+ * Persists to GCS (and local backup).
  */
-function saveLearning(correction, context) {
-  let learnings = [];
-  try { learnings = JSON.parse(fs.readFileSync(LEARNINGS_PATH, 'utf8')); } catch {}
+async function saveLearning(correction, context) {
+  if (!_learningsLoaded) {
+    _learningsCache = await loadLearningsFromStorage();
+    _learningsLoaded = true;
+  }
+  const learnings = _learningsCache || [];
   const nextId = learnings.length > 0 ? Math.max(...learnings.map(l => l.id || 0)) + 1 : 1;
   learnings.push({
     id: nextId,
@@ -70,15 +85,16 @@ function saveLearning(correction, context) {
     correction,
     date: new Date().toISOString().slice(0, 10)
   });
-  try { fs.writeFileSync(LEARNINGS_PATH, JSON.stringify(learnings, null, 2)); } catch {}
+  _learningsCache = learnings;
+  await saveLearningsToStorage(learnings);
 }
 
 // ---------------------------------------------------------------------------
 // System prompt — built dynamically with learnings
 // ---------------------------------------------------------------------------
 
-function buildSystemPrompt() {
-  const learnings = loadLearnings();
+async function buildSystemPrompt() {
+  const learnings = await loadLearnings();
   const learningsSection = learnings
     ? `\n## Learned Corrections (from past mistakes — follow these strictly)\n${learnings}\n`
     : '';
@@ -94,7 +110,7 @@ function buildSystemPrompt() {
 ## How to Answer
 1. Read the user's question and decide which tool(s) to call to get the data you need
 2. After receiving tool results, answer the question conversationally
-3. Use Slack mrkdwn formatting: *bold*, _italic_, bullet points with •, <url|text> for links
+3. Use Slack mrkdwn formatting: *bold* (single asterisk, NOT double **), _italic_, bullet points with •, <url|text> for links. NEVER use **double asterisks** — Slack does not render them correctly. Always use *single asterisks* for bold.
 4. Keep answers concise — lead with the key insight, then supporting detail
 5. When showing lists or rankings, use bullet points
 6. Round numbers sensibly (1 decimal for days, whole numbers for counts, nearest % for rates)
@@ -104,19 +120,55 @@ function buildSystemPrompt() {
 10. If the data doesn't contain enough info, say what's missing and suggest what to ask
 11. ALWAYS include HubSpot links for deals, companies, and contacts when available. Use <url|deal name> format so users can click through. Every deal mentioned in your answer MUST have its link.
 
-## Deal Links (MANDATORY)
-Whenever you reference a deal in your response — whether listing, comparing, or mentioning in passing — you MUST include the HubSpot link. Tool results include a "link" field for every deal. Format: <link|Deal Name>. Never mention a deal without its link.
+## Deal Links (MANDATORY — NO EXCEPTIONS)
+Whenever you reference a deal in your response — whether listing, comparing, or mentioning in passing — you MUST include the HubSpot link. Tool results include a "link" field for every deal. Format: <link|Deal Name>. Never mention a deal without its link. Even when listing 20+ deals, EVERY SINGLE ONE must have its link. If you are listing many deals, do not get lazy — include the link for each one. This is non-negotiable.
 
 ## Tool Selection Guide
-- Company status/intel → search_company (fetches deals, contacts, engagements, territory conflicts)
-- "who owns X?" / ownership check → resolve_ownership
+- "who owns X?" / "account owner" / company status → search_company FIRST. This checks HubSpot for the ACTUAL owner. The company.owner field is the current account owner — report this as the answer. Only use resolve_ownership if the company is NOT in HubSpot.
+- "who SHOULD own X?" / new lead routing → resolve_ownership (5-tier hierarchy for accounts not yet in HubSpot)
+- Company intel, deals, contacts, engagements → search_company
 - Pipeline data, deal lists, pitches, analytics → get_pipeline_data
 - Rep activity summary → get_rep_activity
 - "who covers X?" / territory → get_territory
-- Launch Dashboard properties → search_dashboard
+- Launch Dashboard properties, contract dates, signed dates → search_dashboard (supports date filtering with month parameter)
 - Find deals by name → search_deals
 - Find contacts by name/email → search_contacts
 - Rep audit / conflicts → run_audit
+- Market research, vacancy rates, concessions, expansion viability, competitor intel → web_search
+
+## Account Ownership (CRITICAL — read this carefully)
+When someone asks "who owns [company]?" or "account owner for [company]":
+1. ALWAYS call search_company first — this looks up the actual HubSpot record
+2. The company.owner field IS the answer — this is who currently owns the account in HubSpot
+3. If there are AP Pipeline deals, also mention the deal owner(s) — but the COMPANY owner is the primary answer
+4. DO NOT call resolve_ownership for existing companies. resolve_ownership is for NEW leads that aren't in HubSpot yet.
+5. NEVER report a contact-level owner as the account owner. The company.owner field is the account owner, not the owner on individual contacts.
+6. If the company is not found in HubSpot, THEN use resolve_ownership to determine who should own it.
+
+## Web Search + Market Research
+When the user asks about market conditions, vacancy rates, concessions, expansion potential, or anything not in our internal data, use web_search. Combine with internal tools for multi-step research.
+
+### How to search effectively:
+1. First call search_dashboard to get our actual property names and cities
+2. Then web_search EACH property by its EXACT property name + city. Use the property name from the dashboard, NOT a portfolio or owner name.
+3. Good search queries (use the actual property name from the dashboard):
+   - "[Property Name] [City] apartments pricing availability"
+   - "[Property Name] [City] apartments specials"
+   - "[Property Name] [City] apartment concessions move in special"
+4. BAD search queries (avoid these):
+   - Portfolio names like "Bellrock" — listing sites don't use portfolio names
+   - Generic market searches like "Houston apartments concessions" — too broad
+   - Old years like "2024" — use current data
+5. Search results will come from apartments.com, Zillow, ForRent, Realtor.com, etc. Look for:
+   - Starting rent prices (e.g. "starting at $1,377")
+   - Unit availability (e.g. "10 units available")
+   - Move-in specials / concessions mentioned in snippets
+   - Number of floor plans / bed/bath options
+6. For expansion viability analysis:
+   - Properties with many available units = potential vacancy = expansion opportunity
+   - Properties advertising specials/concessions = softer demand = our opportunity to negotiate
+   - Compare current rents across our properties to identify pricing trends
+7. Report what you found with specific data points. If a property search returned pricing but no concession info, say that clearly.
 
 ## Team-Wide Queries (CRITICAL)
 When the user asks about "all reps", "the team", "who is best", "overall performance", "everyone", rankings, or any question that implies comparing ALL reps:
@@ -138,15 +190,29 @@ When the user asks "what's most likely to close", "what's closing next", or simi
 ## Comparisons
 - For "compare X to Y", call the relevant tool once per rep
 - For "who is best" / rankings, call get_pipeline_data() with no rep filter to get everyone's data in one call, then supplement with get_rep_activity for missing reps
+
+## Pitch Queries (CRITICAL)
+When the user asks about pitches ("how many pitches", "pitches this week", "pitch count", "who pitched"):
+1. ALWAYS set pitch_only: true — without it, pitch data (pitchList, pitchByRep, pitchCountInWindow) is NOT returned
+2. For calendar month queries ("in March", "in February"), use start_date/end_date with exact dates (e.g. start_date: "2026-03-01", end_date: "2026-03-31"). NEVER approximate with days.
+3. For relative queries ("this week", "last 30 days"), use the days parameter
+4. Use pitchByRep for per-rep counts and pitchCountInWindow for the total — these are pre-computed and accurate
+
+## Trending / Activity Trends
+When the user asks about "trending", "trending up/down", or "who is most active":
+1. Call get_pipeline_data(days: 7) for pipeline metrics
+2. ALSO call get_rep_activity for at least the top 5-6 reps to get engagement data (calls, emails, meetings, tasks)
+3. Compare BOTH pipeline deals AND engagement volume. A rep trending up should show increases in both areas.
+4. Pipeline data alone is NOT sufficient for trending questions — engagement data is required.
 ${learningsSection}
 ## Self-Validation (CRITICAL — do this BEFORE writing your response)
 After receiving tool results and before answering, check your own math:
-1. **Counts must add up.** If you state a total and then list per-rep numbers, the per-rep numbers MUST sum to the total. If they don't, use the per-rep breakdown (pitchByRep, recentRepActivity) as the source of truth and recompute the total.
-2. **Dates must be in range.** If the user asked about "today", only include items dated today. If they asked about "this week", only include items within the last 7 days. Check the pitchDate or date fields in the tool results — do not assume every item returned is in range.
-3. **List length must match stated count.** If you say "5 pitches" and then list deals, you must list exactly 5. If there are more than you can list, say "X pitches total, here are the top ones:".
-4. **Use pre-computed breakdowns.** If the tool result includes pitchByRep, recentRepActivity, or similar pre-aggregated fields, use those numbers directly. Do NOT try to recount from the pitchList — it may be truncated.
-5. **Don't invent data.** If a field is null or missing, don't guess. Say the data isn't available.
-6. **Cross-check before responding.** Read your draft answer one more time. Does every number trace back to the tool result? If you can't point to where a number came from, remove it.
+1. *Counts must add up.* If you state a total and then list per-rep numbers, the per-rep numbers MUST sum to the total. If they don't, use the per-rep breakdown (pitchByRep, recentRepActivity) as the source of truth and recompute the total.
+2. *Dates must be in range.* If the user asked about "today", only include items dated today. If they asked about "this week", only include items within the last 7 days. Check the pitchDate or date fields in the tool results — do not assume every item returned is in range.
+3. *List length must match stated count.* If you say "5 pitches" and then list deals, you must list exactly 5. If there are more than you can list, say "X pitches total, here are the top ones:".
+4. *Use pre-computed breakdowns.* If the tool result includes pitchByRep, recentRepActivity, or similar pre-aggregated fields, use those numbers directly. Do NOT try to recount from the pitchList — it may be truncated.
+5. *Don't invent data.* If a field is null or missing, don't guess. Say the data isn't available.
+6. *Cross-check before responding.* Read your draft answer one more time. Does every number trace back to the tool result? If you can't point to where a number came from, remove it.
 
 ## Important Rules
 - When the user says "my" or "me", use their rep name (provided in the user message context)
@@ -161,6 +227,17 @@ After receiving tool results and before answering, check your own math:
 User: "renato pitches this week"
 → Call get_pipeline_data(rep: "Renato Lagomarsino", pitch_only: true, days: 7)
 → Answer with count of pitches whose pitch date is in the last 7 days, list each deal with <link|name>, pitch date, stage
+
+### Example 1b: Pitches in a calendar month
+User: "how many pitches in March?"
+→ Call get_pipeline_data(pitch_only: true, start_date: "2026-03-01", end_date: "2026-03-31")
+→ Use pitchCountInWindow and pitchByRep for the answer — these are exact counts for March 1-31
+→ NEVER use "days: 31" for calendar month queries — that gives a rolling window, not the calendar month
+
+### Example 1c: Pitch comparison
+User: "how many pitches does john L have compared to the team"
+→ Call get_pipeline_data(pitch_only: true) with NO days/dates for all-time, or with start_date/end_date if a time period is implied
+→ ALWAYS use pitch_only: true when the question is about pitches — without it, pitch data is not returned
 
 ### Example 2: Team-wide ranking
 User: "who is performing best this week?"
@@ -198,7 +275,7 @@ The system will automatically save this for future reference.`;
 const TOOL_DEFINITIONS = [
   {
     name: 'search_company',
-    description: 'Search for a company in HubSpot and get full intelligence: deals, contacts, engagements, territory conflicts. If not found in HubSpot, automatically runs ownership resolution. Use this for "venterra status", "show me [company]", "what\'s going on with [company]".',
+    description: 'Search for a company in HubSpot and get full intelligence: current owner, AP Pipeline deals, contacts, engagements, territory conflicts. The company.owner field shows who currently owns the account. Use for "who owns X?", "venterra status", "show me [company]", "account owner for [company]". This is the PRIMARY tool for ownership questions about existing accounts.',
     input_schema: {
       type: 'object',
       properties: {
@@ -209,14 +286,16 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'get_pipeline_data',
-    description: 'Fetch AP pipeline deals with optional filters. Returns deal summary with stage distribution, close times, win rates, pitch data, stale deals, and per-rep breakdown (repSummary). When called with NO rep filter, repSummary contains ALL reps with AP pipeline deals — use this for team-wide comparisons. IMPORTANT: check repSummary against the known reps list and call get_rep_activity for any missing reps.',
+    description: 'Fetch AP pipeline deals with optional filters. Returns deal summary with stage distribution, close times, win rates, pitch data, stale deals, and per-rep breakdown (repSummary). When called with NO rep filter, repSummary contains ALL reps with AP pipeline deals — use this for team-wide comparisons. IMPORTANT: check repSummary against the known reps list and call get_rep_activity for any missing reps. For calendar month queries (e.g. "in March"), use start_date/end_date instead of days.',
     input_schema: {
       type: 'object',
       properties: {
         rep: { type: 'string', description: 'Rep name to filter by (e.g. "Renato Lagomarsino"). Omit for all reps — repSummary will show every rep.' },
         stage: { type: 'string', description: 'Pipeline stage to filter by (e.g. "Contract Redline"). Omit for all stages.' },
-        days: { type: 'number', description: 'Lookback window in days. When used with pitch_only, filters to pitches with pitch dates within this window. Omit for all time.' },
-        pitch_only: { type: 'boolean', description: 'If true, only return deals with pitch dates. When combined with days, only includes deals whose pitch date falls within the days window.' }
+        days: { type: 'number', description: 'Rolling lookback window in days from now. Use for "this week" (7), "last 30 days" (30). Do NOT use for calendar month queries — use start_date/end_date instead.' },
+        start_date: { type: 'string', description: 'Start date (YYYY-MM-DD) for calendar date range queries. Use for "in March" (start_date: "2026-03-01", end_date: "2026-03-31"), "in Q1", etc. Takes precedence over days.' },
+        end_date: { type: 'string', description: 'End date (YYYY-MM-DD) for calendar date range queries. If omitted, defaults to today.' },
+        pitch_only: { type: 'boolean', description: 'If true, only return deals with pitch dates and build a pitchList with per-rep breakdown. ALWAYS set this to true when the user asks about pitches.' }
       },
       required: []
     }
@@ -235,11 +314,13 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'resolve_ownership',
-    description: 'Run ownership resolution for a company/owner name. Applies the 5-tier hierarchy, enriches from cache/web, checks HubSpot. Use for "who owns X?", "check Camden", "who should own Greystar?".',
+    description: 'Run ownership resolution for a NEW lead using the 5-tier hierarchy. Use ONLY for new leads not yet in HubSpot, or when the user asks "who SHOULD own X?" For existing accounts ("who owns X?", "account owner"), use search_company instead — it reads the actual HubSpot owner. Set lease_up=true when the user mentions a lease-up property.',
     input_schema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Company or owner name to resolve' }
+        name: { type: 'string', description: 'Company or owner name to resolve' },
+        lease_up: { type: 'boolean', description: 'Whether this is a lease-up property. Set true when user mentions lease-up.' },
+        market: { type: 'string', description: 'Property market/location (e.g. "Tampa FL", "Dallas TX"). Pass when user mentions a location.' }
       },
       required: ['name']
     }
@@ -257,13 +338,15 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: 'search_dashboard',
-    description: 'Search the Launch Dashboard (Google Sheet) for property details: units, AE, PSM, signed date, expected launch. Use for "units at [property]", "PSM for [property]", "properties in Atlanta".',
+    description: 'Search the Launch Dashboard for properties and partners: units, AE, PSM, signed/contract dates, expected launch. Supports text search (property name, partner name, market, rep) AND date filtering (e.g. "contracts signed in March"). Use for "units at [property]", "properties in Atlanta", "what signed in March", "partners with contract dates in March 2026". Handles misspelled names.',
     input_schema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Property name or search term' }
+        query: { type: 'string', description: 'Property name, partner name, market, or search term. Can be empty when using month filter to get all properties for that month.' },
+        month: { type: 'string', description: 'Month filter for date-based queries, e.g. "march 2026", "march", "2026-03". Returns only properties with signed/contract dates in that month.' },
+        date_field: { type: 'string', description: 'Which date to filter by: "signed" (default, contract signing date) or "launch" (expected go-live date).' }
       },
-      required: ['query']
+      required: []
     }
   },
   {
@@ -299,6 +382,17 @@ const TOOL_DEFINITIONS = [
       },
       required: ['rep']
     }
+  },
+  {
+    name: 'web_search',
+    description: 'Search the web for real-time market data, property details, vacancy rates, concessions, and competitor intel. Use for questions about market conditions, property availability, expansion viability, or any data not in our internal systems. Examples: "vacancy rate at Domain Heights", "concessions at apartments in Austin", "[property name] availability 2026". Can also research owners, operators, and market trends.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Web search query. Be specific — include property name, city, and what data you need (vacancy, concessions, pricing, etc.)' }
+      },
+      required: ['query']
+    }
   }
 ];
 
@@ -308,10 +402,14 @@ const TOOL_DEFINITIONS = [
 
 /**
  * Detect if a query is complex enough to warrant Sonnet instead of Haiku.
- * Complex = team-wide comparisons, multi-rep analysis, ranking all reps.
+ * Complex = team-wide comparisons, multi-rep analysis, ranking all reps,
+ * or multi-step research (web search + internal data).
  */
 function isComplexQuery(text) {
   const lower = (text || '').toLowerCase();
+
+  // Web search / market research — multi-step reasoning
+  if (/\b(web search|vacancy|concession|expansion|viable|market research|market condition)\b/i.test(lower)) return true;
 
   // Team-wide / ranking / comparison keywords
   if (/\b(all reps|the team|every rep|everyone|team-wide|overall|rank|ranking|leaderboard)\b/i.test(lower)) return true;
@@ -419,6 +517,11 @@ function keywordFallback(text) {
 // ---------------------------------------------------------------------------
 
 function formatSlackBlocks(text) {
+  // Fix double-asterisk bold (**x**) → single-asterisk (*x*) for Slack mrkdwn
+  text = text.replace(/\*\*([^*]+)\*\*/g, '*$1*');
+  // Fix markdown headers (# x) → bold (*x*)
+  text = text.replace(/^#{1,3}\s+(.+)$/gm, '*$1*');
+
   const blocks = [];
   const MAX_BLOCK_LEN = 2900;
 
@@ -487,6 +590,11 @@ function validateTeamAnswer(queryText, answerText) {
 
 async function handleQuery(text, context) {
   const client = getClient();
+  const trace = createTrace({
+    userId: context.userId,
+    userName: context.userName,
+    query: text
+  });
 
   const config = loadConfig();
   const callerRep = config.slackToRep?.[context.userId] || null;
@@ -517,12 +625,12 @@ async function handleQuery(text, context) {
 
   // Choose model based on query complexity — try Sonnet for complex, fall back to Haiku
   const complex = isComplexQuery(text);
-  const SONNET_MODEL = 'claude-sonnet-4-5-20241022';
+  const SONNET_MODEL = 'claude-sonnet-4-6';
   const HAIKU_MODEL = 'claude-haiku-4-5-20251001';
   let model = complex ? SONNET_MODEL : HAIKU_MODEL;
   if (complex) console.log('[apbot/agent] Complex query detected, trying Sonnet');
 
-  const systemPrompt = buildSystemPrompt();
+  const systemPrompt = await buildSystemPrompt();
 
   // Prompt caching: wrap system prompt and mark last tool for caching
   const cachedSystem = [
@@ -545,11 +653,13 @@ async function handleQuery(text, context) {
     const MAX_TURNS = 10;
     let turn = 0;
     let answer = null;
+    const collectedToolResults = []; // Track all tool calls for output validation
 
     while (turn < MAX_TURNS) {
       turn++;
 
       let response;
+      const llmStart = new Date();
       try {
         response = await client.messages.create({
           model,
@@ -564,6 +674,8 @@ async function handleQuery(text, context) {
         if (model === SONNET_MODEL && (modelErr.status === 404 || modelErr.status === 400)) {
           console.log('[apbot/agent] Sonnet unavailable, falling back to Haiku');
           model = HAIKU_MODEL;
+          // Reset thinking budget — Haiku gets 4k thinking, and max_tokens must exceed it
+          thinkingConfig.budget_tokens = 4000;
           response = await client.messages.create({
             model,
             max_tokens: 8000,
@@ -576,6 +688,7 @@ async function handleQuery(text, context) {
           throw modelErr;
         }
       }
+      logGeneration(trace, { model, messages, response, startTime: llmStart, usage: response.usage });
 
       const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
       const textBlocks = response.content.filter(b => b.type === 'text');
@@ -592,12 +705,15 @@ async function handleQuery(text, context) {
       const toolResults = [];
       for (const toolBlock of toolUseBlocks) {
         console.log(`[apbot/agent] Calling tool: ${toolBlock.name}`, JSON.stringify(toolBlock.input));
+        const toolStart = new Date();
         const result = await executeTool(toolBlock.name, toolBlock.input);
+        logToolCall(trace, { toolName: toolBlock.name, args: toolBlock.input, result, startTime: toolStart });
         toolResults.push({
           type: 'tool_result',
           tool_use_id: toolBlock.id,
           content: JSON.stringify(result)
         });
+        collectedToolResults.push({ tool: toolBlock.name, args: toolBlock.input, result });
       }
 
       messages.push({ role: 'user', content: toolResults });
@@ -653,6 +769,8 @@ async function handleQuery(text, context) {
             tool_use_id: toolBlock.id,
             content: JSON.stringify(result)
           });
+          // Persist correction tool results for output validation
+          collectedToolResults.push({ tool: toolBlock.name, args: toolBlock.input, result });
         }
 
         messages.push({ role: 'user', content: corrResults });
@@ -663,26 +781,108 @@ async function handleQuery(text, context) {
     const learningMatch = answer.match(/\[LEARNING:\s*(.+?)\]/i);
     if (learningMatch) {
       const correction = learningMatch[1].trim();
-      saveLearning(correction, context);
+      await saveLearning(correction, context);
       console.log(`[apbot/agent] Saved learning: ${correction}`);
       // Remove the learning tag from the user-facing response
       answer = answer.replace(/\[LEARNING:\s*.+?\]/i, '').trim();
+    }
+
+    // Output validation — cross-check LLM numbers against tool data
+    const validationIssues = validateOutputNumbers(answer, collectedToolResults);
+    if (validationIssues.length > 0) {
+      console.log(`[apbot/agent] Validation found ${validationIssues.length} issue(s)`);
+      answer += '\n\n' + validationIssues.join('\n');
     }
 
     // Save to memory — strip thinking blocks to keep memory lean
     saveMemory(context.userId, stripThinking(messages), null, null);
 
     const blocks = formatSlackBlocks(answer);
+    finalizeTrace(trace, { output: answer, status: 'success', model, totalTurns: turn, validationIssues: validationIssues.length });
     return { blocks };
 
   } catch (err) {
-    console.error('[apbot/agent] LLM error, falling back:', err.message);
+    console.error('[apbot/agent] LLM error:', err.message);
+    finalizeTrace(trace, { output: err.message, status: 'error', model });
+
+    // Retry once on transient errors (overloaded, timeout, 5xx)
+    const isTransient = err.status === 529 || err.status === 503 || err.status >= 500
+      || err.message?.includes('timeout') || err.message?.includes('overloaded');
+    if (isTransient) {
+      console.log('[apbot/agent] Transient error, retrying in 2s...');
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        return await handleQuery(text, context);
+      } catch (retryErr) {
+        console.error('[apbot/agent] Retry also failed:', retryErr.message);
+      }
+    }
+
     return handleFallback(text, callerRep, context);
   }
 }
 
+// ---------------------------------------------------------------------------
+// Output validation — cross-check LLM numbers against tool data (Phase 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * After the LLM generates a response, check key numbers against tool results.
+ * If mismatches are found, append a correction note or re-query.
+ */
+function validateOutputNumbers(answer, toolResults) {
+  const issues = [];
+
+  for (const { tool, result } of toolResults) {
+    if (tool === 'get_pipeline_data' && result && !result.error) {
+      // Check pitch count — validate that the total appears in the response.
+      // Skip when pitchByRep is present: the response may focus on individual rep counts
+      // which will naturally differ from the total (e.g. "John has 2" vs total 2000).
+      if (result.pitchCountInWindow !== undefined) {
+        const expected = result.pitchCountInWindow;
+        const mentioned = extractNumbersFromText(answer);
+        // Only flag if the response appears to state a TOTAL pitch count that's wrong.
+        // When pitchByRep exists, individual rep counts are valid — don't compare them to the total.
+        const hasByRep = result.pitchByRep && Object.keys(result.pitchByRep).length > 1;
+        if (expected > 0 && !mentioned.includes(expected) && !hasByRep) {
+          const wrongCount = mentioned.find(n => n !== expected && n > 0 && Math.abs(n - expected) < expected);
+          if (wrongCount !== undefined) {
+            issues.push(`⚠ _Correction: pitch count is *${expected}*, not ${wrongCount}._`);
+          }
+        }
+      }
+
+      // Check recent wins
+      if (result.timeWindow?.recentWins) {
+        const expected = result.timeWindow.recentWins.count;
+        const mentioned = extractNumbersFromText(answer);
+        // Only flag if the answer mentions "closed" and has a wrong number
+        if (/clos/i.test(answer) && expected >= 0 && !mentioned.includes(expected)) {
+          const wrongCount = mentioned.find(n => n !== expected && /clos/i.test(answer));
+          if (wrongCount !== undefined && wrongCount !== expected) {
+            issues.push(`⚠ _Correction: ${expected} deals closed in this period, not ${wrongCount}._`);
+          }
+        }
+      }
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * Extract human-readable numbers from text (strips URLs and large IDs).
+ */
+function extractNumbersFromText(text) {
+  const cleaned = text.replace(/https?:\/\/[^\s>|)]+/g, '');
+  return (cleaned.match(/\b\d[\d,]*\b/g) || [])
+    .map(m => parseInt(m.replace(/,/g, ''), 10))
+    .filter(n => !isNaN(n) && n < 100000 && !(n >= 2020 && n <= 2030));
+}
+
 /**
  * Keyword fallback — when Anthropic API is unavailable.
+ * Formats tool data into readable Slack blocks instead of raw JSON.
  */
 async function handleFallback(text, callerRep, context) {
   let resolvedText = text;
@@ -692,7 +892,12 @@ async function handleFallback(text, callerRep, context) {
 
   const match = keywordFallback(resolvedText);
   if (!match) {
-    return { text: `I couldn't understand that. Try something like \`who owns Greystar?\` or \`my deals\`.` };
+    return {
+      blocks: [
+        { type: 'section', text: { type: 'mrkdwn', text: `I'm having trouble processing that right now. Try again in a moment, or use a specific query like:` } },
+        { type: 'section', text: { type: 'mrkdwn', text: `• \`/apbot who owns Camden?\`\n• \`/apbot who covers Dallas?\`\n• \`/apbot pitches this week\`\n• \`/apbot audit Scout Bishop\`` } }
+      ]
+    };
   }
 
   if (match.args && !match.args.rep && callerRep) {
@@ -703,17 +908,89 @@ async function handleFallback(text, callerRep, context) {
 
   try {
     const result = await executeTool(match.tool, match.args);
-    const json = JSON.stringify(result, null, 2);
-    const truncated = json.length > 2800 ? json.slice(0, 2800) + '\n…(truncated)' : json;
+    const formatted = formatFallbackResult(match.tool, result);
     return {
       blocks: [
-        { type: 'section', text: { type: 'mrkdwn', text: `_⚠ Running in fallback mode (LLM unavailable)_` } },
-        { type: 'section', text: { type: 'mrkdwn', text: '```' + truncated + '```' } }
+        { type: 'section', text: { type: 'mrkdwn', text: `_⚠ Running in simplified mode — LLM unavailable_` } },
+        ...formatted
       ]
     };
   } catch (err) {
-    return { text: `Error: ${err.message}` };
+    return {
+      blocks: [
+        { type: 'section', text: { type: 'mrkdwn', text: `I'm having trouble right now. Please try again in a moment.` } },
+        { type: 'section', text: { type: 'mrkdwn', text: `_Error: ${err.message.slice(0, 200)}_` } }
+      ]
+    };
   }
+}
+
+/**
+ * Format tool results into readable Slack blocks for fallback mode.
+ */
+function formatFallbackResult(tool, result) {
+  const blocks = [];
+
+  if (result.error) {
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `_Error: ${result.error}_` } });
+    return blocks;
+  }
+
+  switch (tool) {
+    case 'resolve_ownership': {
+      const reps = (result.assignedTo || []).join(', ') || 'UNASSIGNED';
+      let text = `*${result.query}* → *${reps}*`;
+      if (result.ruleLabel) text += `\nRule: ${result.ruleLabel}`;
+      if (result.explanation) text += `\n${result.explanation}`;
+      if (result.hubspot?.link) text += `\n<${result.hubspot.link}|View in HubSpot>`;
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+      break;
+    }
+    case 'get_territory': {
+      if (!result.found) {
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `No territory assignment found for "${result.query}".` } });
+      } else {
+        const reps = result.reps.map(r => `• *${r.rep}*${r.focus ? ` (${r.focus})` : ''}`).join('\n');
+        blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*${result.query}* (${result.stateCode}):\n${reps}` } });
+      }
+      break;
+    }
+    case 'get_pipeline_data': {
+      let text = `*Pipeline Summary:* ${result.totalDeals} deals`;
+      if (result.totalAmount) text += ` • $${(result.totalAmount / 1000000).toFixed(1)}M total`;
+      if (result.winRate) text += ` • ${result.winRate}% win rate`;
+      const stages = Object.entries(result.byStage || {}).sort((a, b) => b[1] - a[1]).slice(0, 10);
+      if (stages.length) {
+        text += '\n\n*By Stage:*\n' + stages.map(([s, c]) => `• ${s}: ${c}`).join('\n');
+      }
+      const reps = (result.repSummary || []).slice(0, 10);
+      if (reps.length) {
+        text += '\n\n*By Rep:*\n' + reps.map(r => `• ${r.rep}: ${r.deals} deals, ${r.won} won`).join('\n');
+      }
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: text.slice(0, 2900) } });
+      break;
+    }
+    case 'get_rep_activity': {
+      let text = `*${result.rep}* — ${result.days}-day activity`;
+      text += `\n• ${result.dealsCreated || 0} deals created, ${result.dealsModified || 0} modified`;
+      text += `\n• ${result.calls || 0} calls, ${result.emails || 0} emails, ${result.meetings || 0} meetings, ${result.tasks || 0} tasks`;
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+      break;
+    }
+    default: {
+      // Generic: show key fields
+      const keys = Object.keys(result).filter(k => !k.startsWith('_'));
+      const summary = keys.slice(0, 8).map(k => {
+        const v = result[k];
+        if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return `• *${k}:* ${v}`;
+        if (Array.isArray(v)) return `• *${k}:* ${v.length} items`;
+        return null;
+      }).filter(Boolean).join('\n');
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: summary || '_No data available_' } });
+    }
+  }
+
+  return blocks;
 }
 
 module.exports = { handleQuery };

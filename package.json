@@ -4,18 +4,28 @@
   "description": "Ownership conflict resolution engine + HubSpot audit tool + Slack bot for Class A/B Conventional MF",
   "main": "src/cli.js",
   "scripts": {
-    "check":     "node src/cli.js check",
-    "audit":     "node src/cli.js audit",
+    "check": "node src/cli.js check",
+    "audit": "node src/cli.js audit",
     "audit-all": "node src/cli.js audit-all",
-    "fix":       "node src/cli.js fix",
-    "start":     "node server.js"
+    "fix": "node src/cli.js fix",
+    "start": "node server.js",
+    "eval": "npx promptfoo eval -c evals/promptfooconfig.yaml",
+    "eval:view": "npx promptfoo view"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
-    "@slack/bolt": "^3.21.1"
+    "@anthropic-ai/sdk": "^0.79.0",
+    "@google-cloud/storage": "^7.19.0",
+    "@slack/bolt": "^3.21.1",
+    "dotenv": "^17.3.1",
+    "langfuse": "^3.38.6",
+    "xlsx": "^0.18.5"
   },
   "author": "coultpears",
-  "license": "UNLICENSED"
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "promptfoo": "^0.121.2"
+  }
 }

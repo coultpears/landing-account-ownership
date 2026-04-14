@@ -19,6 +19,7 @@ const { qualify }               = require('../qualify');
 const { enrichFromPropertyName, enrichOwnerHQ, looksLikePropertyName } = require('../search');
 const { auditRep, KNOWN_REPS }  = require('../audit');
 const { searchProperties }      = require('./datasources/launch-dashboard');
+const { webSearch }             = require('./datasources/web-search');
 const { getContactsByCompany }  = require('./contacts');
 const { summarizeDeals, summarizeActivity } = require('./summarize');
 
@@ -414,7 +415,11 @@ async function search_company({ name }) {
       owner: ownerName(cp.hubspot_owner_id) || 'unassigned',
       link: companyLink
     },
-    deals: { count: dealSummaries.length, records: dealSummaries.slice(0, 20) },
+    deals: {
+      count: dealSummaries.length,
+      apPipelineCount: dealSummaries.filter(d => d.pipeline === 'AP Pipeline').length,
+      records: dealSummaries.slice(0, 20)
+    },
     contacts: { count: contactSummaries.length, records: contactSummaries.slice(0, 10) },
     engagements: {
       ...engSummary,
@@ -423,7 +428,10 @@ async function search_company({ name }) {
     },
     territoryConflicts,
     asOfDate: new Date().toISOString().slice(0, 10),
-    _hints: 'Each deal record includes a "link" field — ALWAYS include this in your response as <link|deal name>. ' +
+    _hints: 'IMPORTANT: Focus on AP Pipeline deals only. Each deal has a "pipeline" field — "AP Pipeline" or "Other". ' +
+      'When answering ownership questions, the account owner is determined by AP Pipeline deals, not other pipelines. ' +
+      'The deals.apPipelineCount shows how many AP Pipeline deals exist. ' +
+      'Each deal record includes a "link" field — ALWAYS include this in your response as <link|deal name>. ' +
       'If territoryConflicts.hasConflicts is true, flag it prominently with ⚠. ' +
       'The company.link field is the HubSpot company link — include it in your response.'
   };
@@ -433,7 +441,7 @@ async function search_company({ name }) {
 // Tool: get_pipeline_data
 // ===================================================================
 
-async function get_pipeline_data({ rep, stage, days, pitch_only }) {
+async function get_pipeline_data({ rep, stage, days, start_date, end_date, pitch_only }) {
   const config = loadConfig();
   const allOwners = await getOwners();
   const stageLabels = await getDealStageLabels();
@@ -455,8 +463,13 @@ async function get_pipeline_data({ rep, stage, days, pitch_only }) {
   }
 
   if (stage) {
-    const stageId = Object.entries(stageLabels).find(
-      ([id, label]) => label.toLowerCase().includes(stage.toLowerCase())
+    const stageLower = stage.toLowerCase();
+    // Prefer exact match, then startsWith, then substring — avoids "Contract" matching both
+    // "Contract Redline" and "Contract Discussions"
+    const stageId = (
+      Object.entries(stageLabels).find(([, label]) => label.toLowerCase() === stageLower) ||
+      Object.entries(stageLabels).find(([, label]) => label.toLowerCase().startsWith(stageLower)) ||
+      Object.entries(stageLabels).find(([, label]) => label.toLowerCase().includes(stageLower))
     )?.[0];
     if (stageId) {
       filters.push({ propertyName: 'dealstage', operator: 'EQ', value: stageId });
@@ -467,37 +480,88 @@ async function get_pipeline_data({ rep, stage, days, pitch_only }) {
     filters.push({ propertyName: 'first_pitch_date__ap_', operator: 'HAS_PROPERTY' });
   }
 
-  // When days is specified, add a date filter so we only get recently active deals
-  // This is critical — the pipeline has 1000+ deals total, so without a date filter
-  // we'd miss recent closes that fall outside the first 500 results
-  if (days) {
-    const cutoffMs = Date.now() - days * 86400000;
-    const cutoffStr = new Date(cutoffMs).toISOString().split('.')[0] + 'Z';
-    filters.push({ propertyName: 'hs_lastmodifieddate', operator: 'GTE', value: cutoffStr });
+  // When a time window is specified (days OR start_date/end_date), add a date filter
+  // so we only get recently active deals. This is critical — the pipeline has 1000+
+  // deals total, so without a date filter we'd miss recent closes outside the first 500 results.
+  //
+  // start_date/end_date use YYYY-MM-DD format for calendar-month queries like "in March".
+  // days uses a rolling window from now. If both are specified, start_date/end_date wins.
+  let windowStart = null;   // ms timestamp — start of time window
+  let windowEnd = null;     // ms timestamp — end of time window (null = now)
+  if (start_date) {
+    windowStart = new Date(start_date + 'T00:00:00-05:00').getTime(); // Central time start-of-day
+    const apiCutoff = new Date(windowStart).toISOString().split('.')[0] + 'Z';
+    filters.push({ propertyName: 'hs_lastmodifieddate', operator: 'GTE', value: apiCutoff });
+    if (end_date) {
+      windowEnd = new Date(end_date + 'T23:59:59-05:00').getTime(); // Central time end-of-day
+    }
+  } else if (days) {
+    windowStart = Date.now() - days * 86400000;
+    const apiCutoff = new Date(windowStart).toISOString().split('.')[0] + 'Z';
+    filters.push({ propertyName: 'hs_lastmodifieddate', operator: 'GTE', value: apiCutoff });
   }
 
-  const maxDeals = days ? 2000 : 2000;
+  const maxDeals = 2000;
   const deals = await searchDealsAPI([{ filters }], DEAL_PROPS, maxDeals);
 
   // Build summary using shared summarizer (all-time stats for the fetched deals)
   const summary = summarizeDeals(deals, stageLabels, allOwners);
 
-  // When days is specified, add time-scoped metrics so the LLM uses recent data
-  if (days) {
-    const now = Date.now();
-    const cutoff = now - days * 86400000;
+  // When a time window is active, repSummary is built from time-filtered deals only.
+  // Add a warning so the LLM doesn't treat it as full all-time data.
+  if (windowStart) {
+    summary._repSummaryWarning = 'WARNING: repSummary below is computed from deals filtered by the time window — it is NOT a complete all-time breakdown. For time-scoped per-rep data, use timeWindow.recentRepActivity instead. repSummary may overcount or undercount because it includes all-time stats for recently-modified deals.';
+  }
+
+  // When a stage filter is applied, include a deal list with links
+  if (stage) {
+    const portalId = await getPortalId();
+    const ownerName = ownerNameFn(allOwners);
+    const cap = 50;
+    summary.dealList = {
+      total: deals.length,
+      showing: Math.min(deals.length, cap),
+      deals: deals.slice(0, cap).map(d => {
+        const dp = d.properties || {};
+        return {
+          name: dp.dealname || '(unnamed)',
+          owner: ownerName(dp.hubspot_owner_id) || 'unassigned',
+          amount: dp.amount ? Number(dp.amount) : null,
+          link: `https://app.hubspot.com/contacts/${portalId}/deal/${d.id}`
+        };
+      }),
+      _hint: `Showing ${Math.min(deals.length, cap)} of ${deals.length} deals. EVERY deal you mention MUST include its <link|deal name>. Do NOT mention any deal without its link — if you can't include the link, don't mention the deal.`
+    };
+  }
+
+  // When a time window is active, add time-scoped metrics so the LLM uses recent data
+  if (windowStart) {
+    const cutoff = windowStart;
+    const ceiling = windowEnd || Date.now();
     const CLOSED_WON_ID = '126194579';
     const LOST_DEAL_ID = '1097165102';
     const portalId = await getPortalId();
     const ownerName = ownerNameFn(allOwners);
+
+    // Helper: check if a timestamp falls within the window [cutoff, ceiling]
+    const inWindow = (ts) => !isNaN(ts) && ts >= cutoff && ts <= ceiling;
+
+    // For pitch dates (stored as YYYY-MM-DD in HubSpot), compare as date strings
+    // in US Central time to match the pitch_only section's logic exactly.
+    const toCentralDateStr = (ms) => {
+      const d = new Date(ms);
+      const central = new Date(d.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+      return central.toISOString().slice(0, 10);
+    };
+    const windowStartDateStr = toCentralDateStr(cutoff);
+    const windowEndDateStr = toCentralDateStr(ceiling);
 
     // Deals that entered Closed Won within the time window
     const recentWins = deals.filter(d => {
       const dp = d.properties || {};
       const enteredWon = dp[`hs_v2_date_entered_${CLOSED_WON_ID}`];
       if (!enteredWon) return false;
-      const ts = new Date(enteredWon).getTime();
-      return !isNaN(ts) && ts >= cutoff;
+      return inWindow(new Date(enteredWon).getTime());
     }).map(d => {
       const dp = d.properties || {};
       return {
@@ -515,8 +579,7 @@ async function get_pipeline_data({ rep, stage, days, pitch_only }) {
       const dp = d.properties || {};
       const enteredLost = dp[`hs_v2_date_entered_${LOST_DEAL_ID}`];
       if (!enteredLost) return false;
-      const ts = new Date(enteredLost).getTime();
-      return !isNaN(ts) && ts >= cutoff;
+      return inWindow(new Date(enteredLost).getTime());
     }).map(d => {
       const dp = d.properties || {};
       return {
@@ -528,8 +591,7 @@ async function get_pipeline_data({ rep, stage, days, pitch_only }) {
 
     // Deals created within the time window
     const recentCreated = deals.filter(d => {
-      const ts = new Date(d.properties?.createdate || 0).getTime();
-      return ts >= cutoff;
+      return inWindow(new Date(d.properties?.createdate || 0).getTime());
     }).length;
 
     // Per-rep breakdown scoped to the time window
@@ -541,33 +603,43 @@ async function get_pipeline_data({ rep, stage, days, pitch_only }) {
 
       // Count deals modified in window
       const lastMod = parseTs(dp.hs_lastmodifieddate);
-      if (lastMod >= cutoff) recentRepActivity[rep].deals++;
+      if (inWindow(lastMod)) recentRepActivity[rep].deals++;
 
       // Count wins in window
       const enteredWon = dp[`hs_v2_date_entered_${CLOSED_WON_ID}`];
-      if (enteredWon && new Date(enteredWon).getTime() >= cutoff) recentRepActivity[rep].won++;
+      if (enteredWon && inWindow(new Date(enteredWon).getTime())) recentRepActivity[rep].won++;
 
       // Count losses in window
       const enteredLost = dp[`hs_v2_date_entered_${LOST_DEAL_ID}`];
-      if (enteredLost && new Date(enteredLost).getTime() >= cutoff) recentRepActivity[rep].lost++;
+      if (enteredLost && inWindow(new Date(enteredLost).getTime())) recentRepActivity[rep].lost++;
 
       // Count created in window
       const created = new Date(dp.createdate || 0).getTime();
-      if (created >= cutoff) recentRepActivity[rep].created++;
+      if (inWindow(created)) recentRepActivity[rep].created++;
 
-      // Count pitches in window
-      const pitchDate = dp.first_pitch_date__ap_;
-      if (pitchDate && new Date(pitchDate).getTime() >= cutoff) recentRepActivity[rep].pitches++;
+      // Count pitches in window — use date string comparison in Central time
+      // to stay consistent with the pitch_only section below
+      const pitchDate = (dp.first_pitch_date__ap_ || '').slice(0, 10);
+      if (pitchDate && pitchDate >= windowStartDateStr && pitchDate <= windowEndDateStr) {
+        recentRepActivity[rep].pitches++;
+      }
     }
 
+    const windowLabel = start_date
+      ? `${start_date} to ${end_date || 'now'}`
+      : `last ${days} days`;
+
     summary.timeWindow = {
-      days,
+      days: days || null,
+      start_date: start_date || null,
+      end_date: end_date || null,
       cutoffDate: new Date(cutoff).toISOString().slice(0, 10),
+      endDate: new Date(ceiling).toISOString().slice(0, 10),
       recentWins: { count: recentWins.length, deals: recentWins },
       recentLosses: { count: recentLosses.length, deals: recentLosses },
       recentDealsCreated: recentCreated,
       recentRepActivity,
-      _note: `These metrics are scoped to the last ${days} days. Closed Won is determined by hs_v2_date_entered (stage entry date), not the closedate field. USE THESE NUMBERS for any "this week/month" questions — not the all-time counts above.`
+      _note: `These metrics are scoped to ${windowLabel}. Closed Won is determined by hs_v2_date_entered (stage entry date), not the closedate field. USE THESE NUMBERS for any time-scoped questions — not the all-time counts above.`
     };
   }
 
@@ -582,20 +654,21 @@ async function get_pipeline_data({ rep, stage, days, pitch_only }) {
     // US Central time (Landing's timezone) gives the right results.
     const toDateStr = (ms) => {
       const d = new Date(ms);
-      // Convert to US Central time (UTC-5 or UTC-6 depending on DST)
       const central = new Date(d.toLocaleString('en-US', { timeZone: 'America/Chicago' }));
       return central.toISOString().slice(0, 10);
     };
     const todayStr = toDateStr(now);
-    const cutoffStr = days ? toDateStr(now - days * 86400000) : null;
+    // Use windowStart/windowEnd if available, otherwise fall back to days
+    const cutoffStr = windowStart ? toDateStr(windowStart) : null;
+    const ceilingStr = windowEnd ? toDateStr(windowEnd) : todayStr;
 
     const filteredPitches = deals
       .filter(d => {
         const pitchDate = (d.properties?.first_pitch_date__ap_ || '').slice(0, 10);
         if (!pitchDate) return false;
-        // Exclude future pitch dates — only show pitches up to today
-        if (pitchDate > todayStr) return false;
-        // When days is set, only include pitches within the date window
+        // Exclude future pitch dates — only show pitches up to the ceiling
+        if (pitchDate > ceilingStr) return false;
+        // When a window is set, only include pitches within the date range
         if (cutoffStr && pitchDate < cutoffStr) return false;
         return true;
       })
@@ -636,15 +709,18 @@ async function get_pipeline_data({ rep, stage, days, pitch_only }) {
     summary.pitchList = pitchDeals;
     summary.pitchCountInWindow = totalPitchCount;
     summary.pitchByRep = pitchByRep;
-    if (days) {
-      summary.pitchWindowNote = `Only pitches with pitch dates in the last ${days} days are included.`;
+    if (windowStart) {
+      const label = start_date
+        ? `${start_date} to ${end_date || 'today'}`
+        : `the last ${days} days`;
+      summary.pitchWindowNote = `Only pitches with pitch dates in ${label} are included.`;
     }
   }
 
-  summary.filters = { rep: repName, stage: stage || null, pitchOnly: !!pitch_only };
+  summary.filters = { rep: repName, stage: stage || null, pitchOnly: !!pitch_only, start_date: start_date || null, end_date: end_date || null };
   summary._hints = 'repSummary contains ALL-TIME per-rep breakdown. ' +
-    'CRITICAL: When "days" was specified, a "timeWindow" object is included with time-scoped metrics. ' +
-    'For "this week/month" questions, ALWAYS use timeWindow.recentWins, timeWindow.recentLosses, ' +
+    'CRITICAL: When a time window was specified (days or start_date/end_date), a "timeWindow" object is included with time-scoped metrics. ' +
+    'For time-scoped questions, ALWAYS use timeWindow.recentWins, timeWindow.recentLosses, ' +
     'timeWindow.recentRepActivity, and timeWindow.recentDealsCreated — NOT the all-time counts. ' +
     'timeWindow.recentRepActivity has per-rep won/lost/created/pitches counts scoped to the time window. ' +
     'Check repSummary reps against the known roster: ' + KNOWN_REPS.join(', ') + '. ' +
@@ -707,13 +783,13 @@ async function get_rep_activity({ rep, days }) {
 // Tool: resolve_ownership
 // ===================================================================
 
-async function resolve_ownership({ name }) {
+async function resolve_ownership({ name, lease_up, market }) {
   if (!name) return { error: 'Name is required.' };
 
   const input = {
     ownerName: name,
-    market: null, ownerHQ: null,
-    isLeaseUp: false, propertyClass: null, propertyType: null
+    market: market || null, ownerHQ: null,
+    isLeaseUp: lease_up || false, propertyClass: null, propertyType: null
   };
 
   // Enrichment: cache → property name → HQ
@@ -839,12 +915,13 @@ async function get_territory({ location }) {
 // Tool: search_dashboard
 // ===================================================================
 
-async function search_dashboard({ query }) {
-  if (!query) return { error: 'Search query is required.' };
-
+async function search_dashboard({ query, month, date_field }) {
   let rows;
   try {
-    rows = await searchProperties(query);
+    const options = {};
+    if (month) options.month = month;
+    if (date_field) options.dateField = date_field;
+    rows = await searchProperties(query || '', options);
   } catch (err) {
     if (err.message.includes('not configured')) {
       return { error: 'LAUNCH_DASHBOARD_CSV_URL is not configured.' };
@@ -853,28 +930,35 @@ async function search_dashboard({ query }) {
   }
 
   if (rows.length === 0) {
-    return { found: false, query, message: `No properties found matching "${query}".` };
+    const desc = month ? ` with ${date_field || 'signed'} dates in ${month}` : '';
+    return { found: false, query: query || '(all)', month: month || null, message: `No properties found${query ? ` matching "${query}"` : ''}${desc}.` };
   }
 
   return {
     found: true,
-    query,
+    query: query || '(all)',
+    month: month || null,
+    dateFilter: date_field || (month ? 'signed' : null),
     count: rows.length,
-    properties: rows.slice(0, 15).map(row => ({
+    properties: rows.slice(0, 30).map(row => ({
       name: row['Property Name'] || '(unnamed)',
+      partner: row['Partner'] || null,
       market: row['Market'] || null,
-      units: row['Unit Count'] || row['Total Unit Count'] || null,
-      ae: row['Account Executive'] || row['AP Sales Person'] || null,
+      units: row['Unit Count'] || null,
+      ae: row['AP Sales Person'] || row['Account Executive'] || null,
       psm: row['Partner Success manager'] || null,
-      opsCoordinator: row['Operations Coordinator'] || row['AP Coordinator'] || null,
-      signedDate: row['Signed Date'] || row['Contract Signed Date'] || null,
-      expectedLaunch: row['Expected Launch'] || null,
+      signedDate: row['Signed Date'] || null,
+      gld: row['GLD'] || row['Expected Launch'] || null,
+      dealType: row['Deal Type'] || null,
+      address: row['Property Address'] || null,
       link: row['Link'] || null,
       source: row['_source'] || null
     })),
-    _hints: 'Include property links when available. Show units, AE, PSM, market, and launch dates for each property. ' +
-      'The "source" field indicates which dashboard tab the data came from. ' +
-      'When a market column is present, location-based queries will return accurate results.'
+    _hints: 'Show partner name, property name, market, units, AE, and signed/GLD dates. ' +
+      'The "partner" field is the management company or owner — this is what users mean by "partner". ' +
+      'When month filter was used, ALL returned properties have contract/signed dates in that month. ' +
+      'signedDate is the contract signing date. GLD is the Go-Live Date (launch). ' +
+      'Fuzzy matching is enabled — misspelled names will still match.'
   };
 }
 
@@ -990,6 +1074,39 @@ async function run_audit({ rep, days }) {
 }
 
 // ===================================================================
+// Tool: web_search — real-time market research
+// ===================================================================
+
+async function web_search_tool({ query }) {
+  if (!query) return { error: 'Search query is required.' };
+
+  try {
+    const results = await webSearch(query, 10);
+
+    if (results.length === 0) {
+      return { found: false, query, message: `No web results found for "${query}".` };
+    }
+
+    return {
+      found: true,
+      query,
+      count: results.length,
+      results: results.map(r => ({
+        title: r.title,
+        snippet: r.snippet,
+        url: r.url
+      })),
+      _hints: 'These are real-time web search results. Synthesize the key findings from the snippets. ' +
+        'Look for vacancy rates, concession offers (free months, reduced rent), unit availability, and pricing. ' +
+        'Cite specific data points from the snippets. If the results are not relevant, say so. ' +
+        'Do NOT make up data — only report what the search results show.'
+    };
+  } catch (err) {
+    return { error: `Web search failed: ${err.message}` };
+  }
+}
+
+// ===================================================================
 // Registry — maps tool names to implementations
 // ===================================================================
 
@@ -1002,7 +1119,8 @@ const TOOL_REGISTRY = {
   search_dashboard,
   search_deals,
   search_contacts: search_contacts_tool,
-  run_audit
+  run_audit,
+  web_search: web_search_tool
 };
 
 /**

@@ -1,0 +1,18 @@
+description: Debug assertion context
+
+evaluateOptions:
+  maxConcurrency: 1
+
+providers:
+  - file://provider.js
+
+prompts:
+  - '{{query}}'
+
+tests:
+  - description: "Debug assertion vars"
+    vars:
+      query: "who covers Phoenix?"
+    assert:
+      - type: javascript
+        value: "({ pass: false, score: 0, reason: 'pr_keys=' + JSON.stringify(Object.keys(context.providerResponse || {})) + ' | has_metadata=' + !!context.providerResponse?.metadata + ' | md_keys=' + JSON.stringify(Object.keys(context.providerResponse?.metadata || {})) })"

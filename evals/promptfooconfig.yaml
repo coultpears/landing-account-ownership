@@ -1,0 +1,309 @@
+# APbot Eval Suite — tests the full agent loop (LLM → tools → response)
+#
+# Run:  npx promptfoo eval -c evals/promptfooconfig.yaml
+# View: npx promptfoo view
+
+description: APbot v2.1 Evaluation Suite
+
+# Limit concurrency to avoid HubSpot 429 rate limits
+evaluateOptions:
+  maxConcurrency: 2
+
+providers:
+  - file://provider.js
+
+prompts:
+  - '{{query}}'
+
+defaultTest:
+  options:
+    # Timeout per test — agent makes real API calls (HubSpot + Anthropic)
+    timeout: 120000
+  # Cross-validation assertions run on EVERY test — each one auto-skips
+  # when its data isn't present (e.g. pitchCountMatches skips non-pitch queries)
+  assert:
+    - type: javascript
+      value: file://assert-pitch-count.js
+    - type: javascript
+      value: file://assert-recent-wins.js
+    - type: javascript
+      value: file://assert-deal-count.js
+    - type: javascript
+      value: file://assert-territory-rep.js
+    - type: javascript
+      value: file://assert-ownership-rep.js
+
+tests:
+  # ---------------------------------------------------------------------------
+  # 1. TOOL SELECTION — does the agent pick the right tool?
+  # ---------------------------------------------------------------------------
+
+  - description: "Territory lookup routes to get_territory"
+    vars:
+      query: "who covers Phoenix?"
+    assert:
+      - type: llm-rubric
+        value: "Response should name the rep(s) who cover Phoenix/Arizona territory. Should mention a specific rep name."
+      - type: not-icontains
+        value: "error"
+
+  - description: "Ownership check for existing company uses search_company"
+    vars:
+      query: "who owns Camden?"
+    assert:
+      - type: llm-rubric
+        value: "Response should show the current HubSpot account owner for Camden. If unassigned, it should note that and may mention the ownership hierarchy (Camden is a Top 50 owner). Should include any deals, contacts, or territory context."
+
+  - description: "Company intel routes to search_company"
+    vars:
+      query: "venterra status"
+    assert:
+      - type: llm-rubric
+        value: "Response should show company intelligence — deals, contacts, engagements, or territory info for Venterra."
+
+  - description: "Deal search routes to search_deals"
+    vars:
+      query: "find the deal called Axis 201"
+    assert:
+      - type: llm-rubric
+        value: "Response should show deal search results. If deals found, each should have a HubSpot link."
+
+  - description: "Dashboard search routes to search_dashboard"
+    vars:
+      query: "properties in Atlanta"
+    assert:
+      - type: llm-rubric
+        value: >
+          Response should come from the Launch Dashboard. If properties were found, it should
+          list them with details like units, AE, PSM, market, or launch date. If no properties
+          were found, it should say so clearly. Either way, it should NOT fall back to HubSpot
+          deals or ownership resolution — this is a dashboard query.
+
+  # ---------------------------------------------------------------------------
+  # 2. PITCH HANDLING (Learnings #1, #6)
+  # ---------------------------------------------------------------------------
+
+  - description: "Pitches this week — count matches tool data"
+    vars:
+      query: "how many pitches this week"
+    assert:
+      - type: llm-rubric
+        value: >
+          Response must report a specific count of pitches. The count should reflect deals with
+          a First Pitch Date within the last 7 days, not total pipeline deals. If zero pitches,
+          it should say so clearly rather than showing unrelated pipeline data.
+      - type: not-icontains
+        value: "engagement"
+
+  - description: "Rep pitches with timeframe"
+    vars:
+      query: "renato pitches this week"
+    assert:
+      - type: llm-rubric
+        value: >
+          Response should show Renato Lagomarsino's pitches from the last 7 days.
+          Each deal mentioned must include a HubSpot link. Count should match the number
+          of deals listed. Pitches are deal-level (First Pitch Date property), not engagements.
+
+  - description: "Calendar month pitches use exact date range"
+    vars:
+      query: "how many pitches in March?"
+    assert:
+      - type: llm-rubric
+        value: >
+          Response must report pitch count for the calendar month of March (March 1-31).
+          Must NOT say "last 31 days" or use a rolling window. Each deal mentioned must
+          include a HubSpot link. Should show per-rep breakdown if available.
+
+  - description: "Pitch comparison uses pitch_only flag"
+    vars:
+      query: "how many pitches does john L have compared to the team"
+    assert:
+      - type: llm-rubric
+        value: >
+          Response must include a specific pitch count for John LaVanway and show how he compares
+          to other reps. Should include a per-rep pitch breakdown or ranking. Each deal mentioned
+          must have a HubSpot link. The pitch count should come from tool data (pitchByRep),
+          not made up.
+
+  # ---------------------------------------------------------------------------
+  # 3. TEAM-WIDE QUERIES (Learnings #2, #4)
+  # ---------------------------------------------------------------------------
+
+  - description: "Team ranking includes all reps"
+    vars:
+      query: "who is performing best this week?"
+    assert:
+      # Spot-check reps that are often missing from rankings
+      - type: icontains
+        value: "Richard"
+      - type: icontains
+        value: "Nolan"
+      - type: icontains
+        value: "Ghislain"
+      - type: icontains
+        value: "Ashtyn"
+      - type: icontains
+        value: "Raegan"
+
+  # ---------------------------------------------------------------------------
+  # 4. DEAL LINKS (Learning #5)
+  # ---------------------------------------------------------------------------
+
+  - description: "Every deal mentioned has a HubSpot link"
+    vars:
+      query: "show me deals in Contract Redline"
+    assert:
+      - type: llm-rubric
+        value: >
+          If any deals are listed, every single deal name must be accompanied by a HubSpot link
+          (formatted as <url|deal name> or similar clickable format). No deal should be mentioned
+          without its link. If no deals exist in Contract Redline, a clear "none" answer is acceptable.
+
+  # ---------------------------------------------------------------------------
+  # 5. RECENT WINS vs ALL-TIME (Learning #7)
+  # ---------------------------------------------------------------------------
+
+  - description: "Recent wins uses timeWindow, not all-time"
+    vars:
+      query: "what closed this week?"
+    assert:
+      - type: llm-rubric
+        value: >
+          Response should show deals that closed THIS WEEK only (within last 7 days).
+          Should not dump all-time closed won deals. If nothing closed this week,
+          it should say so. Any deals mentioned must include HubSpot links.
+
+  # ---------------------------------------------------------------------------
+  # 6. CLOSE LIKELIHOOD (Learning #8)
+  # ---------------------------------------------------------------------------
+
+  - description: "Close likelihood uses pipeline stage, not pitch recency"
+    vars:
+      query: "what deals are most likely to close?"
+    assert:
+      - type: llm-rubric
+        value: >
+          Response must prioritize deals by pipeline stage — Contract Redline first, then
+          Contract Discussions, then Late Stage Opportunities. A recently pitched deal in
+          New Opportunities should NOT be ranked above a deal in Contract Redline.
+          The response should explicitly reference pipeline stages as the basis for ranking.
+      - type: not-icontains
+        value: "most recent pitch"
+
+  # ---------------------------------------------------------------------------
+  # 7. TRENDING / ACTIVITY (Learning #3)
+  # ---------------------------------------------------------------------------
+
+  - description: "Trending uses activity data, not just pipeline"
+    vars:
+      query: "which reps are trending up this week?"
+    assert:
+      - type: llm-rubric
+        value: >
+          Response should include engagement data (calls, emails, meetings) alongside pipeline
+          metrics. Should not base trending solely on deal counts. Should reference weekly
+          trends or activity comparisons. Must cover multiple reps.
+
+  # ---------------------------------------------------------------------------
+  # 8. SELF-VALIDATION — counts and consistency
+  # ---------------------------------------------------------------------------
+
+  - description: "Pipeline breakdown shows all stages with counts"
+    vars:
+      query: "give me the full pipeline breakdown by stage"
+    assert:
+      - type: llm-rubric
+        value: >
+          Response should show a breakdown of the AP pipeline by stage. Must include stage names
+          (New Opportunities, Contacted, Active Opportunities, Late Stage, Contract Discussions,
+          Contract Redline, Closed Won, Lost Deal, etc.) with deal counts for each. Should mention
+          the total number of deals. Should not contain errors or crash.
+      # Programmatic: total deal count must match tool data
+      - type: javascript
+        value: file://assert-deal-count.js
+
+  # ---------------------------------------------------------------------------
+  # 9. OWNERSHIP RESOLUTION — hierarchy rules
+  # ---------------------------------------------------------------------------
+
+  - description: "Top 50 owner resolves to Jack Harvey"
+    vars:
+      query: "who should own a lead from AvalonBay?"
+    assert:
+      - type: icontains
+        value: "Jack Harvey"
+      - type: llm-rubric
+        value: "Response should explain that AvalonBay is a Top 50 owner and resolves to Jack Harvey via Tier 1."
+
+  - description: "Lease-up non-Top-50 resolves to Xander"
+    vars:
+      query: "who owns a lease-up from Unknown Small Owner in Tampa?"
+    assert:
+      - type: llm-rubric
+        value: >
+          Response should resolve to Xander Williams for a lease-up from a non-Top-50 owner.
+          Should mention that lease-ups go to Xander regardless of market/geography.
+
+  # ---------------------------------------------------------------------------
+  # 10. TERRITORY — sub-market splits
+  # ---------------------------------------------------------------------------
+
+  - description: "Texas sub-market split — DFW vs Houston"
+    vars:
+      query: "who covers Dallas?"
+    assert:
+      - type: icontains
+        value: "Wells Davis"
+      - type: llm-rubric
+        value: "Response should identify Wells Davis as covering DFW/Dallas in Texas."
+
+  - description: "Florida sub-market split — Tampa goes to Scout (FL catch-all)"
+    vars:
+      query: "who covers Tampa?"
+    assert:
+      - type: icontains
+        value: "Scout"
+      - type: llm-rubric
+        value: "Response should identify Scout Bishop as covering Tampa. Scout has FL except Fort Lauderdale (Ashtyn) and Miami (Renato)."
+
+  # ---------------------------------------------------------------------------
+  # 11. AUDIT
+  # ---------------------------------------------------------------------------
+
+  - description: "Rep audit returns conflicts"
+    vars:
+      query: "audit Scout Bishop last 30 days"
+    assert:
+      - type: llm-rubric
+        value: >
+          Response should show an audit for Scout Bishop: activity summary and any ownership
+          conflicts found. Should include HubSpot links for conflicting companies if any exist.
+
+  # ---------------------------------------------------------------------------
+  # 12. EDGE CASES
+  # ---------------------------------------------------------------------------
+
+  - description: "Handles unknown company gracefully"
+    vars:
+      query: "who owns ZZZZZ Nonexistent Corp?"
+    assert:
+      - type: llm-rubric
+        value: >
+          Response should indicate the company was not found or could not be matched.
+          Should not hallucinate an owner or make up data. May suggest checking spelling
+          or provide an UNASSIGNED result.
+      - type: not-icontains
+        value: "error"
+
+  - description: "Handles vague query gracefully"
+    vars:
+      query: "hey"
+    assert:
+      - type: llm-rubric
+        value: >
+          Response should ask for clarification or offer to help with specific tasks
+          (pipeline data, territory lookup, ownership check, etc.). Should not crash or
+          return an error.
+      - type: not-icontains
+        value: "error"

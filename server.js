@@ -78,6 +78,13 @@ process.on('unhandledRejection', (err) => {
   console.error('[unhandledRejection]', err?.message || err);
 });
 
+// Flush Langfuse traces on shutdown
+process.on('SIGTERM', async () => {
+  console.log('[server] SIGTERM received, flushing traces...');
+  try { const { flush } = require('./src/apbot/observability'); await flush(); } catch {}
+  process.exit(0);
+});
+
 let app;
 let httpReceiver = null; // set in HTTP mode; used to register /health
 
@@ -1260,6 +1267,519 @@ app.command('/lookup', async ({ command, ack, respond }) => {
     await respond({ text: `❌ Error: ${err.message}`, replace_original: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// /apbot — LLM-powered natural language command
+// ---------------------------------------------------------------------------
+
+const { handleQuery } = require('./src/apbot/agent');
+
+app.command('/apbot', async ({ command, ack, respond, client }) => {
+  const t0 = Date.now();
+  const text = (command.text || '').trim();
+  log('cmd_received', { cmd: '/apbot', user: command.user_name, text });
+
+  await ack();
+  log('ack_sent', { cmd: '/apbot', ackMs: Date.now() - t0 });
+
+  if (!text) {
+    await respond(
+      '*Usage:* `/apbot [question or command]`\n\n' +
+      '*Examples:*\n' +
+      '  • `/apbot who owns Greystar?`\n' +
+      '  • `/apbot audit Scout last 30 days`\n' +
+      '  • `/apbot my deals`\n' +
+      '  • `/apbot deals in Contract Redline`\n' +
+      '  • `/apbot who covers Phoenix?`\n' +
+      '  • `/apbot units at Modera Buckhead`\n' +
+      '  • `/apbot Scout\'s activity this week`\n' +
+      '  • `/apbot tell me about deal 12345`\n\n' +
+      '_Powered by Claude — ask anything about accounts, territories, pipeline, or properties._'
+    );
+    log('respond_sent', { cmd: '/apbot', ms: Date.now() - t0, result: 'usage' });
+    return;
+  }
+
+  await respond({ response_type: 'ephemeral', text: `_Processing: *${text}*…_` });
+  log('respond_working', { cmd: '/apbot', ms: Date.now() - t0 });
+
+  try {
+    const context = {
+      userId: command.user_id,
+      userName: command.user_name,
+      slackClient: client,
+      _originalText: text
+    };
+
+    const result = await handleQuery(text, context);
+
+    if (result.blocks) {
+      await respond({ blocks: result.blocks, replace_original: true });
+    } else {
+      await respond({ text: result.text || 'No results.', replace_original: true });
+    }
+
+    log('respond_sent', { cmd: '/apbot', ms: Date.now() - t0 });
+  } catch (err) {
+    log('error', { cmd: '/apbot', ms: Date.now() - t0, error: err.message });
+    await respond({ text: `❌ Error: ${err.message}`, replace_original: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// CoStar Sync — file upload listener (channel-based trigger)
+//
+// Drop a CoStar XLSX/CSV export into the designated channel and the bot
+// auto-detects it, syncs to HubSpot, and posts a summary in-thread.
+//
+// Set COSTAR_SYNC_CHANNEL in .env to the channel ID where files should be
+// dropped. If not set, the listener accepts uploads in any channel the bot
+// is in (not recommended for production).
+//
+// Required bot scopes: files:read, channels:history (or groups:history for
+// private channels), chat:write
+// Required event subscriptions: message.channels (or message.groups)
+// ---------------------------------------------------------------------------
+
+const costarSync    = require('./src/costar-sync');
+const leaseup       = require('./src/costar-sync/leaseup');
+const leaseupIngest = require('./src/costar-sync/leaseup-ingest');
+
+// Lease-up mode detection: fires when Xander uploads (env var) OR the filename
+// looks lease-up-specific. In lease-up mode, after the CoStar sync we iterate
+// every touched company and run ensureLeaseUpDeal + ZoomInfo contact enrichment.
+function isLeaseUpUpload(event, file) {
+  const xanderSlackId = process.env.XANDER_SLACK_USER_ID;
+  if (xanderSlackId && event.user === xanderSlackId) return true;
+
+  const fileName = (file?.name || '').toLowerCase();
+  const text     = (event.text || '').toLowerCase();
+  return /lease[-\s_]?up/.test(fileName) || /lease[-\s_]?up/.test(text);
+}
+
+// Listen for messages that contain file uploads
+app.event('message', async ({ event, client }) => {
+  // Only process messages with file attachments
+  if (!event.files || event.files.length === 0) return;
+
+  // Ignore bot messages, edits, and deletes
+  if (event.subtype && event.subtype !== 'file_share') return;
+
+  // If COSTAR_SYNC_CHANNEL is set, only listen in that channel
+  const syncChannel = process.env.COSTAR_SYNC_CHANNEL;
+  if (syncChannel && event.channel !== syncChannel) return;
+
+  // Find the first xlsx/csv file in the message
+  const file = event.files.find(f => {
+    const name = (f.name || '').toLowerCase();
+    return name.endsWith('.xlsx') || name.endsWith('.csv') || name.endsWith('.xls');
+  });
+
+  if (!file) return; // no spreadsheet attached — ignore
+
+  // Check if filename looks like a CoStar export (optional safety check)
+  const fileName = (file.name || '').toLowerCase();
+  const looksLikeCostar = fileName.includes('costar') ||
+    fileName.includes('export') ||
+    (event.text || '').toLowerCase().includes('costar');
+
+  if (!looksLikeCostar) {
+    // Not obviously a CoStar file — post a prompt asking to confirm
+    await client.chat.postMessage({
+      channel: event.channel,
+      thread_ts: event.ts,
+      text: `I see a spreadsheet (*${file.name}*) but I'm not sure it's a CoStar export.\n` +
+            `Reply with *"sync"* in this thread to run the CoStar → HubSpot sync, ` +
+            `or *"sync dry-run"* to preview without writing.`
+    });
+
+    // Store pending sync context for the thread confirmation handler
+    pendingCostarSyncs.set(event.ts, {
+      fileUrl: file.url_private_download || file.url_private,
+      fileName: file.name,
+      channel: event.channel,
+      user: event.user,
+      leaseUpMode: isLeaseUpUpload(event, file),
+      expiresAt: Date.now() + 30 * 60 * 1000 // 30 min TTL
+    });
+    return;
+  }
+
+  // File looks like CoStar — run sync automatically
+  const leaseUpMode = isLeaseUpUpload(event, file);
+  await runCostarSyncFromFile(file, event, client, false, leaseUpMode);
+});
+
+// Pending sync confirmations (thread-based, 30-min TTL)
+const pendingCostarSyncs = new Map();
+
+// Listen for thread replies confirming a sync
+app.event('message', async ({ event, client }) => {
+  if (!event.thread_ts) return;
+  const pending = pendingCostarSyncs.get(event.thread_ts);
+  if (!pending) return;
+
+  // Check for confirmation keywords
+  const text = (event.text || '').toLowerCase().trim();
+  if (!text.startsWith('sync')) return;
+
+  const isDryRun = text.includes('dry-run') || text.includes('dry run') || text.includes('preview');
+
+  // Clean up pending entry
+  pendingCostarSyncs.delete(event.thread_ts);
+
+  // Download and sync
+  const t0 = Date.now();
+  log('costar_sync_confirmed', { user: event.user, file: pending.fileName, dryRun: isDryRun });
+
+  await client.chat.postMessage({
+    channel: pending.channel,
+    thread_ts: event.thread_ts,
+    text: isDryRun
+      ? `_Running dry-run sync (no HubSpot writes)…_`
+      : `_Syncing CoStar data to HubSpot…_`
+  });
+
+  try {
+    const filePath = await downloadSlackFile(pending.fileUrl, client);
+
+    if (leaseupIngest.isPropertyLevelFile(filePath)) {
+      await runPropertyLevelIngest(filePath, pending.channel, event.thread_ts, client, isDryRun);
+      try { fs.unlinkSync(filePath); } catch {}
+      log('leaseup_ingest_done', { ms: Date.now() - t0 });
+      return;
+    }
+
+    const summary = await costarSync.runSync(filePath, { dryRun: isDryRun });
+    const blocks = buildSyncSummaryBlocks(summary, isDryRun);
+
+    await client.chat.postMessage({
+      channel: pending.channel,
+      thread_ts: event.thread_ts,
+      blocks,
+      text: 'CoStar sync complete' // fallback for notifications
+    });
+
+    if (pending.leaseUpMode) {
+      await runLeaseUpPostSync(summary, pending.channel, event.thread_ts, client, isDryRun);
+    }
+
+    log('costar_sync_done', { ms: Date.now() - t0, ...summaryStats(summary) });
+    try { fs.unlinkSync(filePath); } catch {}
+
+  } catch (err) {
+    log('costar_sync_error', { ms: Date.now() - t0, error: err.message });
+    await client.chat.postMessage({
+      channel: pending.channel,
+      thread_ts: event.thread_ts,
+      text: `Error: ${err.message}`
+    });
+  }
+});
+
+/**
+ * Run CoStar sync from a Slack file upload.
+ * Posts progress and summary in-thread.
+ */
+async function runCostarSyncFromFile(file, event, client, isDryRun, leaseUpMode = false) {
+  const t0 = Date.now();
+  const fileUrl = file.url_private_download || file.url_private;
+
+  log('costar_sync_start', { user: event.user, file: file.name, channel: event.channel, leaseUpMode });
+
+  // Post "working" message in thread
+  await client.chat.postMessage({
+    channel: event.channel,
+    thread_ts: event.ts,
+    text: leaseUpMode
+      ? `_Syncing *${file.name}* (lease-up mode — will create deals + enrich contacts)…_`
+      : `_Syncing *${file.name}* to HubSpot…_`
+  });
+
+  try {
+    const filePath = await downloadSlackFile(fileUrl, client);
+
+    // Schema-detect: property-level file (Xander's lease-up hunt) vs
+    // company-level CoStar export. They use different ingest paths entirely.
+    if (leaseupIngest.isPropertyLevelFile(filePath)) {
+      await runPropertyLevelIngest(filePath, event.channel, event.ts, client, isDryRun);
+      try { fs.unlinkSync(filePath); } catch {}
+      log('leaseup_ingest_done', { ms: Date.now() - t0 });
+      return;
+    }
+
+    const summary = await costarSync.runSync(filePath, { dryRun: isDryRun });
+    const blocks = buildSyncSummaryBlocks(summary, isDryRun);
+
+    await client.chat.postMessage({
+      channel: event.channel,
+      thread_ts: event.ts,
+      blocks,
+      text: 'CoStar sync complete'
+    });
+
+    if (leaseUpMode) {
+      await runLeaseUpPostSync(summary, event.channel, event.ts, client, isDryRun);
+    }
+
+    log('costar_sync_done', { ms: Date.now() - t0, ...summaryStats(summary) });
+    try { fs.unlinkSync(filePath); } catch {}
+
+  } catch (err) {
+    log('costar_sync_error', { ms: Date.now() - t0, error: err.message });
+    await client.chat.postMessage({
+      channel: event.channel,
+      thread_ts: event.ts,
+      text: `Error syncing: ${err.message}`
+    });
+  }
+}
+
+// Clean up expired pending syncs every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  for (const [ts, entry] of pendingCostarSyncs) {
+    if (entry.expiresAt < now) pendingCostarSyncs.delete(ts);
+  }
+}, 10 * 60 * 1000);
+
+/**
+ * Download a Slack-hosted file to a temp path.
+ * Supports both Slack file URLs and direct download URLs.
+ */
+async function downloadSlackFile(url, client) {
+  const https = require('https');
+  const os    = require('os');
+
+  // Extract file ID from Slack URL if needed
+  let downloadUrl = url;
+
+  // If it's a files.slack.com URL, we need the bot token for auth
+  const tmpPath = path.join(os.tmpdir(), `costar-sync-${Date.now()}.xlsx`);
+
+  return new Promise((resolve, reject) => {
+    const headers = {};
+    if (url.includes('slack.com') || url.includes('slack-files')) {
+      headers['Authorization'] = `Bearer ${process.env.SLACK_BOT_TOKEN}`;
+    }
+
+    const get = (targetUrl) => {
+      const urlObj = new URL(targetUrl);
+      const options = {
+        hostname: urlObj.hostname,
+        path: urlObj.pathname + urlObj.search,
+        headers
+      };
+
+      https.get(options, res => {
+        // Follow redirects
+        if (res.statusCode === 301 || res.statusCode === 302) {
+          get(res.headers.location);
+          return;
+        }
+
+        if (res.statusCode !== 200) {
+          reject(new Error(`Download failed: HTTP ${res.statusCode}`));
+          return;
+        }
+
+        const fileStream = fs.createWriteStream(tmpPath);
+        res.pipe(fileStream);
+        fileStream.on('finish', () => {
+          fileStream.close();
+          resolve(tmpPath);
+        });
+        fileStream.on('error', reject);
+      }).on('error', reject);
+    };
+
+    get(downloadUrl);
+  });
+}
+
+function buildSyncSummaryBlocks(summary, isDryRun) {
+  const prefix = isDryRun ? '[DRY RUN] ' : '';
+
+  // Slack section text limit is 3000 chars. Keep blocks compact.
+  const blocks = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: `${prefix}CoStar Sync Complete` }
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          `*Total records:* ${summary.total}\n` +
+          `*Matched & updated:* ${summary.updated}\n` +
+          `*No changes needed:* ${summary.skipped}\n` +
+          `*New records created:* ${summary.created}\n` +
+          `*Errors:* ${summary.errors}`
+      }
+    }
+  ];
+
+  // Show updated companies — name only, no field list (keeps it under 3000 chars)
+  const updated = summary.details.filter(d => d.action === 'updated');
+  if (updated.length > 0) {
+    const lines = updated.slice(0, 25).map(d => `• ${d.company} _(${d.changes.length} fields)_`);
+    if (updated.length > 25) lines.push(`_… and ${updated.length - 25} more_`);
+    const text = `*Updated:*\n${lines.join('\n')}`;
+    // Split into multiple blocks if still too long
+    if (text.length <= 3000) {
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+    } else {
+      const half = Math.ceil(lines.length / 2);
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*Updated (1/2):*\n${lines.slice(0, half).join('\n')}` } });
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*Updated (2/2):*\n${lines.slice(half).join('\n')}` } });
+    }
+  }
+
+  // Show created companies
+  const created = summary.details.filter(d => d.action === 'created' || d.action === 'would_create');
+  if (created.length > 0) {
+    const lines = created.slice(0, 25).map(d => `• ${d.company}`);
+    if (created.length > 25) lines.push(`_… and ${created.length - 25} more_`);
+    const label = isDryRun ? 'Would create' : 'Created';
+    const text = `*${label}:*\n${lines.join('\n')}`;
+    if (text.length <= 3000) {
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+    } else {
+      const half = Math.ceil(lines.length / 2);
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*${label} (1/2):*\n${lines.slice(0, half).join('\n')}` } });
+      blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `*${label} (2/2):*\n${lines.slice(half).join('\n')}` } });
+    }
+  }
+
+  // Show errors
+  const errors = summary.details.filter(d => d.action === 'error');
+  if (errors.length > 0) {
+    const lines = errors.slice(0, 10).map(d => `• ${d.company}: ${d.error}`);
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*Errors:*\n${lines.join('\n')}` }
+    });
+  }
+
+  // Slack max is 50 blocks — truncate if needed
+  if (blocks.length > 50) blocks.length = 50;
+
+  return blocks;
+}
+
+function summaryStats(s) {
+  return { total: s.total, updated: s.updated, created: s.created, skipped: s.skipped, errors: s.errors };
+}
+
+// ---------------------------------------------------------------------------
+// Lease-up post-sync: for each company touched by the sync, ensure a Lease Up
+// deal exists (create or merge) and enrich with ZoomInfo contacts.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Property-level ingest — Xander's lease-up hunts (CoStar property exports)
+// ---------------------------------------------------------------------------
+
+async function runPropertyLevelIngest(filePath, channel, threadTs, client, isDryRun) {
+  await client.chat.postMessage({
+    channel, thread_ts: threadTs,
+    text: `_Property-level CoStar export detected — running lease-up ingest${isDryRun ? ' (DRY RUN)' : ''}…_`
+  });
+
+  const summary = await leaseupIngest.runLeaseUpIngest(filePath, { dryRun: isDryRun });
+
+  const lines = [
+    `*Lease-Up Ingest ${isDryRun ? '(DRY RUN) ' : ''}Complete*`,
+    `• Property rows: ${summary.total}`,
+    `• Owner companies — matched: ${summary.companiesMatched} | created: ${summary.companiesCreated}`,
+    `• Deals — created: ${summary.dealsCreated} | merged into existing: ${summary.dealsMerged}`,
+    `• Top 50 / owner-assignment conflicts (deal still created, note attached): ${summary.conflicts}`,
+    `• ZoomInfo — companies enriched: ${summary.enrichment.companies} | contacts found: ${summary.enrichment.ziFound} | new contacts created: ${summary.enrichment.contactsCreated} | total associated: ${summary.enrichment.contactsLinked}`
+  ];
+  if (summary.errors.length) {
+    lines.push(`• Errors: ${summary.errors.length}`);
+    lines.push('```' + summary.errors.slice(0, 8).join('\n').slice(0, 2500) + '```');
+  }
+
+  await client.chat.postMessage({
+    channel, thread_ts: threadTs,
+    text: lines.join('\n')
+  });
+
+  // Followup: list conflicts so Xander + owner rep can coordinate
+  const conflicts = summary.details.filter(d => d.conflict);
+  if (conflicts.length) {
+    const ctext = conflicts.slice(0, 20).map(d =>
+      `• *${d.property}* (${d.market}) — owner *${d.owner}* → ${d.conflict}`
+    ).join('\n');
+    await client.chat.postMessage({
+      channel, thread_ts: threadTs,
+      text: `*Deals with owner conflicts* (${conflicts.length}):\n${ctext}${conflicts.length > 20 ? `\n_… and ${conflicts.length-20} more_` : ''}`
+    });
+  }
+}
+
+async function runLeaseUpPostSync(summary, channel, threadTs, client, isDryRun) {
+  // Pull every company that was matched or created — these are the deal targets
+  const targets = (summary.details || [])
+    .filter(d => d.hsId && (d.action === 'updated' || d.action === 'no_changes' || d.action === 'created'))
+    .map(d => ({ id: d.hsId, name: d.company }));
+
+  if (!targets.length) {
+    await client.chat.postMessage({
+      channel, thread_ts: threadTs,
+      text: 'Lease-up: no companies to process (dry-run or errors only).'
+    });
+    return;
+  }
+
+  await client.chat.postMessage({
+    channel, thread_ts: threadTs,
+    text: `_Lease-up mode: creating/merging deals + ZoomInfo enrichment for ${targets.length} companies…_`
+  });
+
+  const results = {
+    dealsCreated:   0,
+    dealsMerged:    0,
+    contactsCreated: 0,
+    contactsLinked: 0,
+    companiesWithZIHits: 0,
+    errors: []
+  };
+
+  for (const t of targets) {
+    try {
+      const out = await leaseup.runLeaseUpForCompany(t.id, t.name, { dryRun: isDryRun });
+      if (out.deal?.action === 'created')   results.dealsCreated++;
+      if (out.deal?.action === 'merged')    results.dealsMerged++;
+      if (out.enrichment?.ziFound > 0)      results.companiesWithZIHits++;
+      results.contactsCreated += out.enrichment?.created    || 0;
+      results.contactsLinked  += out.enrichment?.associated || 0;
+      for (const e of (out.enrichment?.errors || [])) results.errors.push(`${t.name}: ${e}`);
+    } catch (err) {
+      results.errors.push(`${t.name}: ${err.message}`);
+    }
+  }
+
+  const lines = [
+    `*Lease-Up Workflow ${isDryRun ? '(DRY RUN) ' : ''}Complete*`,
+    `• Deals created: ${results.dealsCreated}`,
+    `• Deals merged into existing: ${results.dealsMerged}`,
+    `• Companies with ZoomInfo hits: ${results.companiesWithZIHits}/${targets.length}`,
+    `• New contacts created: ${results.contactsCreated}`,
+    `• Total contacts associated (new + existing): ${results.contactsLinked}`
+  ];
+  if (results.errors.length) {
+    lines.push(`• Errors: ${results.errors.length}`);
+    lines.push('```' + results.errors.slice(0, 10).join('\n').slice(0, 2500) + '```');
+  }
+
+  await client.chat.postMessage({
+    channel, thread_ts: threadTs,
+    text: lines.join('\n')
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Startup

@@ -50,7 +50,7 @@ function getToken() {
 // Core HTTP helper
 // ---------------------------------------------------------------------------
 
-function apiRequest(method, apiPath, body = null) {
+function _singleRequest(method, apiPath, body = null) {
   return new Promise((resolve, reject) => {
     const token  = getToken();
     const bodyStr = body ? JSON.stringify(body) : null;
@@ -74,7 +74,9 @@ function apiRequest(method, apiPath, body = null) {
           let msg;
           try { msg = JSON.parse(data).message || data.slice(0, 300); }
           catch { msg = data.slice(0, 300); }
-          reject(new Error(`HubSpot ${res.statusCode} ${method} ${apiPath}: ${msg}`));
+          const err = new Error(`HubSpot ${res.statusCode} ${method} ${apiPath}: ${msg}`);
+          err.statusCode = res.statusCode;
+          reject(err);
         } else {
           try { resolve(JSON.parse(data)); }
           catch { resolve(data); }
@@ -87,6 +89,23 @@ function apiRequest(method, apiPath, body = null) {
     if (bodyStr) req.write(bodyStr);
     req.end();
   });
+}
+
+async function apiRequest(method, apiPath, body = null) {
+  const MAX_RETRIES = 3;
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await _singleRequest(method, apiPath, body);
+    } catch (err) {
+      if (err.statusCode === 429 && attempt < MAX_RETRIES) {
+        const delay = attempt * 1000; // 1s, 2s backoff
+        console.log(`[hubspot] 429 rate limit on ${method} ${apiPath}, retrying in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})`);
+        await sleep(delay);
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }

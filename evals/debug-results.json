@@ -1,0 +1,238 @@
+{
+  "evalId": "eval-yh1-2026-03-21T23:39:26",
+  "results": {
+    "version": 3,
+    "timestamp": "2026-03-21T23:39:26.174Z",
+    "prompts": [
+      {
+        "id": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "raw": "{{query}}",
+        "label": "{{query}}",
+        "provider": "apbot-agent",
+        "metrics": {
+          "score": 0,
+          "testPassCount": 0,
+          "testFailCount": 1,
+          "testErrorCount": 0,
+          "assertPassCount": 0,
+          "assertFailCount": 1,
+          "totalLatencyMs": 1951,
+          "tokenUsage": {
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "total": 0,
+            "numRequests": 1,
+            "completionDetails": {
+              "reasoning": 0,
+              "acceptedPrediction": 0,
+              "rejectedPrediction": 0
+            },
+            "assertions": {
+              "total": 0,
+              "prompt": 0,
+              "completion": 0,
+              "cached": 0,
+              "numRequests": 0,
+              "completionDetails": {
+                "reasoning": 0,
+                "acceptedPrediction": 0,
+                "rejectedPrediction": 0
+              }
+            }
+          },
+          "namedScores": {},
+          "namedScoresCount": {},
+          "cost": 0
+        }
+      }
+    ],
+    "results": [
+      {
+        "cost": 0,
+        "error": "pr_keys=[\"output\",\"metadata\",\"providerTransformedOutput\"] | has_metadata=true | md_keys=[\"toolCalls\"]",
+        "gradingResult": {
+          "pass": false,
+          "score": 0,
+          "reason": "pr_keys=[\"output\",\"metadata\",\"providerTransformedOutput\"] | has_metadata=true | md_keys=[\"toolCalls\"]",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": false,
+              "score": 0,
+              "reason": "pr_keys=[\"output\",\"metadata\",\"providerTransformedOutput\"] | has_metadata=true | md_keys=[\"toolCalls\"]"
+            }
+          ]
+        },
+        "id": "dd08a1d1-d4b7-4c7e-bfed-532c0c4ef4f6",
+        "latencyMs": 1951,
+        "namedScores": {},
+        "prompt": {
+          "raw": "who covers Phoenix?",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "apbot-agent",
+          "label": ""
+        },
+        "response": {
+          "output": "*Raegan Harris* covers Phoenix, AZ.",
+          "metadata": {
+            "toolCalls": [
+              {
+                "tool": "get_territory",
+                "args": {
+                  "location": "Phoenix"
+                },
+                "result": {
+                  "found": true,
+                  "query": "Phoenix",
+                  "stateCode": "AZ",
+                  "reps": [
+                    {
+                      "rep": "Raegan Harris",
+                      "focus": null
+                    }
+                  ],
+                  "fallback": false,
+                  "multipleReps": false,
+                  "_hints": "If fallback is true, the city did not match any sub-market — show all reps with a coordination warning. If multipleReps is true, each rep has a different sub-market focus — explain which covers what."
+                }
+              }
+            ]
+          }
+        },
+        "score": 0,
+        "success": false,
+        "testCase": {
+          "description": "Debug assertion vars",
+          "vars": {
+            "query": "who covers Phoenix?"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "({ pass: false, score: 0, reason: 'pr_keys=' + JSON.stringify(Object.keys(context.providerResponse || {})) + ' | has_metadata=' + !!context.providerResponse?.metadata + ' | md_keys=' + JSON.stringify(Object.keys(context.providerResponse?.metadata || {})) })"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 0,
+        "vars": {
+          "query": "who covers Phoenix?"
+        },
+        "metadata": {
+          "toolCalls": [
+            {
+              "tool": "get_territory",
+              "args": {
+                "location": "Phoenix"
+              },
+              "result": {
+                "found": true,
+                "query": "Phoenix",
+                "stateCode": "AZ",
+                "reps": [
+                  {
+                    "rep": "Raegan Harris",
+                    "focus": null
+                  }
+                ],
+                "fallback": false,
+                "multipleReps": false,
+                "_hints": "If fallback is true, the city did not match any sub-market — show all reps with a coordination warning. If multipleReps is true, each rep has a different sub-market focus — explain which covers what."
+              }
+            }
+          ],
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 1
+      }
+    ],
+    "stats": {
+      "successes": 0,
+      "failures": 1,
+      "errors": 0,
+      "tokenUsage": {
+        "prompt": 0,
+        "completion": 0,
+        "cached": 0,
+        "total": 0,
+        "numRequests": 1,
+        "completionDetails": {
+          "reasoning": 0,
+          "acceptedPrediction": 0,
+          "rejectedPrediction": 0
+        },
+        "assertions": {
+          "total": 0,
+          "prompt": 0,
+          "completion": 0,
+          "cached": 0,
+          "numRequests": 0,
+          "completionDetails": {
+            "reasoning": 0,
+            "acceptedPrediction": 0,
+            "rejectedPrediction": 0
+          }
+        }
+      },
+      "durationMs": 2000,
+      "evaluationDurationMs": 2000
+    }
+  },
+  "config": {
+    "tags": {},
+    "description": "Debug assertion context",
+    "prompts": [
+      "{{query}}"
+    ],
+    "providers": [
+      "file://provider.js"
+    ],
+    "tests": [
+      {
+        "description": "Debug assertion vars",
+        "vars": {
+          "query": "who covers Phoenix?"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "({ pass: false, score: 0, reason: 'pr_keys=' + JSON.stringify(Object.keys(context.providerResponse || {})) + ' | has_metadata=' + !!context.providerResponse?.metadata + ' | md_keys=' + JSON.stringify(Object.keys(context.providerResponse?.metadata || {})) })"
+          }
+        ]
+      }
+    ],
+    "scenarios": [],
+    "env": {},
+    "outputPath": [
+      "evals/debug-results.json"
+    ],
+    "extensions": [],
+    "metadata": {},
+    "evaluateOptions": {
+      "maxConcurrency": 1
+    }
+  },
+  "shareableUrl": null,
+  "metadata": {
+    "promptfooVersion": "0.121.2",
+    "nodeVersion": "v24.14.0",
+    "platform": "win32",
+    "arch": "x64",
+    "exportedAt": "2026-03-21T23:39:28.298Z",
+    "evaluationCreatedAt": "2026-03-21T23:39:26.174Z"
+  }
+}
