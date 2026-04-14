@@ -138,9 +138,46 @@ const STATE_NAMES = {
   'wisconsin': 'WI', 'wyoming': 'WY', 'district of columbia': 'DC'
 };
 
+// Major cities → state codes for city-only queries (e.g. "Dallas" → TX)
+const CITY_TO_STATE = {
+  'phoenix': 'AZ', 'scottsdale': 'AZ', 'tucson': 'AZ', 'mesa': 'AZ', 'tempe': 'AZ', 'chandler': 'AZ', 'gilbert': 'AZ',
+  'dallas': 'TX', 'houston': 'TX', 'austin': 'TX', 'san antonio': 'TX', 'fort worth': 'TX', 'plano': 'TX', 'irving': 'TX', 'arlington': 'TX', 'frisco': 'TX',
+  'tampa': 'FL', 'miami': 'FL', 'orlando': 'FL', 'jacksonville': 'FL', 'fort lauderdale': 'FL', 'west palm beach': 'FL',
+  'boca raton': 'FL', 'sarasota': 'FL', 'naples': 'FL', 'fort myers': 'FL', 'pensacola': 'FL', 'tallahassee': 'FL',
+  'gainesville': 'FL', 'melbourne': 'FL', 'daytona': 'FL', 'panama city': 'FL',
+  'atlanta': 'GA', 'savannah': 'GA',
+  'nashville': 'TN', 'memphis': 'TN', 'knoxville': 'TN', 'chattanooga': 'TN',
+  'charlotte': 'NC', 'raleigh': 'NC', 'durham': 'NC', 'greensboro': 'NC', 'wilmington': 'NC',
+  'charleston': 'SC', 'greenville': 'SC', 'columbia': 'SC',
+  'chicago': 'IL', 'columbus': 'OH', 'cleveland': 'OH', 'cincinnati': 'OH',
+  'milwaukee': 'WI', 'madison': 'WI',
+  'denver': 'CO', 'colorado springs': 'CO', 'boulder': 'CO',
+  'salt lake city': 'UT',
+  'los angeles': 'CA', 'san diego': 'CA', 'san francisco': 'CA', 'san jose': 'CA', 'sacramento': 'CA',
+  'irvine': 'CA', 'anaheim': 'CA', 'long beach': 'CA', 'oakland': 'CA',
+  'new york': 'NY', 'nyc': 'NY', 'brooklyn': 'NY', 'manhattan': 'NY', 'queens': 'NY', 'buffalo': 'NY', 'albany': 'NY', 'syracuse': 'NY', 'rochester': 'NY',
+  'seattle': 'WA', 'portland': 'OR', 'boise': 'ID',
+  'richmond': 'VA', 'norfolk': 'VA', 'virginia beach': 'VA',
+  'baltimore': 'MD', 'bethesda': 'MD',
+  'detroit': 'MI', 'birmingham': 'AL', 'little rock': 'AR',
+  'louisville': 'KY', 'lexington': 'KY',
+  'new orleans': 'LA', 'baton rouge': 'LA',
+  'las vegas': 'NV', 'reno': 'NV',
+  'albuquerque': 'NM',
+  'oklahoma city': 'OK', 'tulsa': 'OK',
+  'indianapolis': 'IN',
+  'minneapolis': 'MN', 'st paul': 'MN',
+  'kansas city': 'MO', 'st louis': 'MO',
+  'omaha': 'NE', 'des moines': 'IA',
+  'boston': 'MA', 'newark': 'NJ', 'jersey city': 'NJ', 'stamford': 'CT', 'hartford': 'CT',
+  'philadelphia': 'PA', 'pittsburgh': 'PA',
+  'honolulu': 'HI',
+  'washington': 'DC', 'washington dc': 'DC',
+};
+
 /**
  * Extract a 2-letter state code from a location string.
- * Accepts: "VA", "McLean VA", "Virginia", "virginia", "Atlanta GA", etc.
+ * Accepts: "VA", "McLean VA", "Virginia", "virginia", "Atlanta GA", "Dallas", etc.
  */
 function extractStateCode(locationStr) {
   const str = locationStr.trim();
@@ -155,6 +192,12 @@ function extractStateCode(locationStr) {
   const sortedNames = Object.keys(STATE_NAMES).sort((a, b) => b.length - a.length);
   for (const name of sortedNames) {
     if (lower.includes(name)) return STATE_NAMES[name];
+  }
+
+  // City name lookup — check longest city names first for multi-word cities
+  const sortedCities = Object.keys(CITY_TO_STATE).sort((a, b) => b.length - a.length);
+  for (const city of sortedCities) {
+    if (lower.includes(city)) return CITY_TO_STATE[city];
   }
 
   return lastToken; // last resort

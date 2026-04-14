@@ -46,15 +46,17 @@
   "stateAssignments": [
     {
       "rep": "Jack Thomasson",
-      "states": ["TN", "KY", "MS", "LA"],
+      "states": ["TN", "KY", "MS", "LA", "OK", "AL", "AR"],
       "subMarkets": [],
-      "assignedAt": "2026-03-01T00:00:00Z"
+      "region": "South-Central",
+      "assignedAt": "2026-03-18T00:00:00Z"
     },
     {
       "rep": "Wells Davis",
       "states": ["TX"],
       "subMarkets": ["DFW", "Dallas", "Fort Worth", "Frisco", "Plano", "Arlington", "McKinney", "Irving", "Carrollton", "Lewisville", "Allen", "Richardson", "Denton", "Grand Prairie", "Garland", "Austin", "Round Rock", "Cedar Park"],
       "focus": "DFW & Austin",
+      "region": "Texas North",
       "assignedAt": "2026-01-01T00:00:00Z"
     },
     {
@@ -62,115 +64,74 @@
       "states": ["TX"],
       "subMarkets": ["Houston", "The Woodlands", "Woodlands", "Sugar Land", "Katy", "Humble", "Pasadena", "Pearland", "Conroe", "Spring", "League City", "Baytown", "San Antonio", "New Braunfels", "San Marcos"],
       "focus": "Houston & San Antonio",
+      "region": "Texas South",
       "assignedAt": "2026-01-01T00:00:00Z"
     },
     {
       "rep": "Scout Bishop",
-      "states": ["GA", "VA", "MD", "DC", "MT", "WY", "AK"],
+      "states": ["GA", "VA", "MD", "DC", "MT", "WY", "AK", "WV"],
       "subMarkets": [],
-      "assignedAt": "2026-03-01T00:00:00Z"
+      "region": "Southeast + Rockies",
+      "assignedAt": "2026-03-18T00:00:00Z"
+    },
+    {
+      "rep": "Scout Bishop",
+      "states": ["FL"],
+      "subMarkets": [],
+      "focus": "FL (except Fort Lauderdale & Miami)",
+      "region": "Southeast + Rockies",
+      "assignedAt": "2026-03-18T00:00:00Z"
     },
     {
       "rep": "Ashtyn Garner",
       "states": ["FL"],
-      "subMarkets": ["Fort Lauderdale", "Broward", "Pompano Beach", "Deerfield Beach", "Coral Springs", "Tampa", "St. Petersburg", "Saint Petersburg", "Clearwater", "Brandon", "Lakeland", "Sarasota", "Bradenton", "Fort Myers", "Naples", "Cape Coral", "Bonita Springs", "Pensacola", "Tallahassee", "Panama City", "Destin"],
-      "focus": "FL - West",
-      "assignedAt": "2026-03-01T00:00:00Z"
+      "subMarkets": ["Fort Lauderdale", "Broward", "Pompano Beach", "Deerfield Beach", "Coral Springs", "Sunrise", "Plantation", "Davie", "Weston", "Hollywood", "Margate", "Coconut Creek", "Tamarac", "Lauderhill", "Lauderdale Lakes"],
+      "focus": "Fort Lauderdale",
+      "region": "Fort Lauderdale",
+      "assignedAt": "2026-03-18T00:00:00Z"
     },
     {
       "rep": "Renato Lagomarsino",
       "states": ["FL"],
-      "subMarkets": ["Miami", "Dade", "Coral Gables", "Brickell", "Hialeah", "Homestead", "Aventura", "North Miami", "West Palm Beach", "Palm Beach", "Boca Raton", "Boynton Beach", "Delray Beach", "Jupiter", "Orlando", "Kissimmee", "Sanford", "Jacksonville", "Gainesville", "Melbourne", "Daytona", "Daytona Beach", "Ocala", "Port St. Lucie", "Stuart"],
-      "focus": "FL - East",
-      "assignedAt": "2026-03-01T00:00:00Z"
+      "subMarkets": ["Miami", "Dade", "Coral Gables", "Brickell", "Hialeah", "Homestead", "Aventura", "North Miami", "South Miami", "Miami Beach", "Doral", "Kendall", "Cutler Bay", "Miami Gardens", "Miami Lakes", "Sunny Isles"],
+      "focus": "Miami",
+      "region": "Miami",
+      "assignedAt": "2026-03-18T00:00:00Z"
     },
     {
       "rep": "Sophia Nadler",
       "states": ["NC", "SC", "WA", "OR", "ID"],
       "subMarkets": [],
+      "region": "Mid-Atlantic + Pacific NW",
       "assignedAt": "2026-03-01T00:00:00Z"
     },
     {
       "rep": "Richard Baugh",
-      "states": ["IL", "OH", "WI", "ND", "SD"],
+      "states": ["IL", "OH", "WI", "ND", "SD", "IN", "MN", "MI"],
       "subMarkets": [],
-      "assignedAt": "2026-03-01T00:00:00Z"
+      "region": "Upper Midwest + Great Lakes",
+      "assignedAt": "2026-03-16T00:00:00Z"
     },
     {
       "rep": "Raegan Harris",
-      "states": ["NV", "NM"],
+      "states": ["CA", "NV", "NM", "AZ", "HI"],
       "subMarkets": [],
-      "assignedAt": "2026-03-01T00:00:00Z"
-    },
-    {
-      "rep": "Raegan Harris",
-      "states": ["CA"],
-      "subMarkets": ["Los Angeles", "Long Beach", "Anaheim", "Santa Ana", "Irvine", "Glendale", "Pasadena", "Burbank", "Santa Monica", "Torrance", "Pomona", "Riverside", "San Bernardino", "Ontario", "Rancho Cucamonga", "Fontana", "Moreno Valley", "Corona", "Murrieta", "Temecula", "San Diego", "Chula Vista", "El Cajon", "Oceanside", "Escondido", "Carlsbad", "Bakersfield", "Oxnard", "Ventura", "Santa Barbara", "Palm Springs", "Victorville"],
-      "focus": "CA-South",
-      "assignedAt": "2026-03-01T00:00:00Z"
+      "region": "West Coast + Southwest",
+      "assignedAt": "2026-03-16T00:00:00Z"
     },
     {
       "rep": "Ghislain Cossio",
-      "states": ["CT", "PA"],
+      "states": ["NY", "CT", "PA", "NJ", "MA", "DE", "RI", "NH", "VT", "ME"],
       "subMarkets": [],
-      "assignedAt": "2026-03-01T00:00:00Z"
-    },
-    {
-      "rep": "Ghislain Cossio",
-      "states": ["NY"],
-      "subMarkets": ["New York", "NYC", "Manhattan", "Brooklyn", "Queens", "Bronx", "Staten Island", "Yonkers", "White Plains", "Long Island", "Westchester", "New Rochelle", "Mount Vernon"],
-      "focus": "NY-South/NYC Metro",
-      "assignedAt": "2026-03-01T00:00:00Z"
+      "region": "Northeast Corridor + New England",
+      "assignedAt": "2026-03-16T00:00:00Z"
     },
     {
       "rep": "Nolan Moran",
       "states": ["CO", "UT", "IA", "KS", "NE", "MO"],
       "subMarkets": [],
+      "region": "Central Plains + Mountain",
       "assignedAt": "2026-03-01T00:00:00Z"
-    },
-    {
-      "rep": "TBD (Rep 10)",
-      "states": ["AZ", "OK", "IN", "MN", "HI"],
-      "subMarkets": [],
-      "assignedAt": "2026-03-01T00:00:00Z",
-      "notes": "Placeholder - rep TBD"
-    },
-    {
-      "rep": "TBD (Rep 11)",
-      "states": ["MI", "AL", "AR"],
-      "subMarkets": [],
-      "assignedAt": "2026-03-01T00:00:00Z",
-      "notes": "Placeholder - rep TBD"
-    },
-    {
-      "rep": "TBD (Rep 12)",
-      "states": ["WV", "DE", "RI"],
-      "subMarkets": [],
-      "assignedAt": "2026-03-01T00:00:00Z",
-      "notes": "Placeholder - rep TBD"
-    },
-    {
-      "rep": "TBD (Rep 12)",
-      "states": ["NY"],
-      "subMarkets": ["Albany", "Syracuse", "Rochester", "Buffalo", "Utica", "Binghamton", "Ithaca", "Saratoga", "Poughkeepsie", "Newburgh", "Kingston", "Plattsburgh", "Schenectady"],
-      "focus": "NY-North/Upstate",
-      "assignedAt": "2026-03-01T00:00:00Z",
-      "notes": "Placeholder - rep TBD"
-    },
-    {
-      "rep": "TBD (Rep 13)",
-      "states": ["CA"],
-      "subMarkets": ["San Francisco", "Oakland", "San Jose", "Sacramento", "Fresno", "Stockton", "Modesto", "Santa Rosa", "Redding", "Fremont", "Hayward", "Sunnyvale", "Santa Clara", "Berkeley", "Concord", "Walnut Creek", "Palo Alto", "San Mateo", "South San Francisco", "Daly City", "Richmond"],
-      "focus": "CA-North",
-      "assignedAt": "2026-03-01T00:00:00Z",
-      "notes": "Placeholder - rep TBD"
-    },
-    {
-      "rep": "TBD (Rep 14)",
-      "states": ["NJ", "MA", "NH", "VT", "ME"],
-      "subMarkets": [],
-      "assignedAt": "2026-03-01T00:00:00Z",
-      "notes": "Placeholder - rep TBD"
     }
   ]
 }
