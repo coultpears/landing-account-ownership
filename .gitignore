@@ -1,3 +1,18 @@
 .env
 node_modules/
 .claude/
+
+# Runtime artifacts
+data/log.json
+data/cache.json
+__pycache__/
+
+# Secrets
+sa-key.json
+*-key.json
+*.pem
+
+# Generated reports / outputs
+*.docx
+evals/output/
+evals/.cache/
