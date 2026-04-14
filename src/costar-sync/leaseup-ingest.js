@@ -39,8 +39,10 @@ const {
   DEAL_CATEGORY_LEASE_UP,
   apiRequest,
   findOpenDealForCompany,
+  findOpenDealsForCompany,
   createDeal,
   updateDeal,
+  archiveDeal,
   createNoteOnDeal,
   deriveDominantDomain,
   findCompanyByDomain,
@@ -133,10 +135,21 @@ async function fetchCompanyContactIds(companyId) {
 async function searchCompanyByName(name) {
   const res = await apiRequest('POST', '/crm/v3/objects/companies/search', {
     filterGroups: [{ filters: [{ propertyName: 'name', operator: 'CONTAINS_TOKEN', value: name }] }],
-    properties:  ['name', 'city', 'state', 'domain'],
+    properties:  ['name', 'city', 'state', 'domain', 'num_associated_deals'],
     limit: 10
   });
   return res.results || [];
+}
+
+// Share at least one non-trivial token between the matched company name and
+// the queried owner name. Guards against unrelated records happening to share
+// a derived domain (e.g. Collins Enterprises holding related.com when the
+// actual owner is The Related Companies).
+function sharesOwnerToken(queriedOwner, candidateName) {
+  const q = new Set(normName(queriedOwner).split(' ').filter(w => w.length >= 3));
+  const c = new Set(normName(candidateName).split(' ').filter(w => w.length >= 3));
+  for (const w of q) if (c.has(w)) return true;
+  return false;
 }
 
 /**
@@ -151,10 +164,11 @@ async function findOrCreateOwnerCompany(ownerName, { derivedDomain, hintCity, hi
   const normalized = normName(ownerName);
   if (!normalized) throw new Error('Empty owner name');
 
-  // 1. Domain-first dedup (most reliable — unique per org)
+  // 1. Domain-first dedup (most reliable — unique per org), gated by an
+  // owner-token sanity check to reject cross-brand false positives.
   if (derivedDomain) {
     const match = await findCompanyByDomain(derivedDomain);
-    if (match) {
+    if (match && sharesOwnerToken(ownerName, match.properties?.name || '')) {
       return {
         companyId: match.id,
         action:    'matched_by_domain',
@@ -163,15 +177,28 @@ async function findOrCreateOwnerCompany(ownerName, { derivedDomain, hintCity, hi
         domain:    derivedDomain
       };
     }
+    // If the domain-matched record doesn't share a name token with the
+    // owner, fall through to name-based matching — don't trust the domain.
   }
 
-  // 2. Fuzzy name fallback
+  // 2. Fuzzy name fallback with deterministic tie-break:
+  //    (a) highest similarity score wins
+  //    (b) among equals, prefer candidates with a populated domain
+  //    (c) among those, prefer more associated deals (stronger record)
   const candidates = await searchCompanyByName(ownerName);
-  let best = null, bestScore = 0;
-  for (const c of candidates) {
-    const s = nameScore(normalized, normName(c.properties?.name || ''));
-    if (s > bestScore) { bestScore = s; best = c; }
-  }
+  const scored = candidates.map(c => ({
+    c,
+    score: nameScore(normalized, normName(c.properties?.name || '')),
+    hasDomain: !!(c.properties?.domain),
+    deals: Number(c.properties?.num_associated_deals || 0)
+  }));
+  scored.sort((a, b) =>
+    (b.score - a.score) ||
+    (Number(b.hasDomain) - Number(a.hasDomain)) ||
+    (b.deals - a.deals) ||
+    String(a.c.id).localeCompare(String(b.c.id)));
+  const best      = scored[0]?.c || null;
+  const bestScore = scored[0]?.score || 0;
   const nWords = normalized.split(' ').filter(w => w.length >= 2).length;
   const threshold = nWords <= 1 ? 0.9 : 0.75;
   if (best && bestScore >= threshold) {
@@ -269,22 +296,117 @@ function buildConflictNoteBody(ownerName, conflict, row) {
   ].join('\n');
 }
 
-async function createOrMergeLeaseUpDeal(companyId, row, conflictNote) {
-  const dealName = buildDealName(row);
+// Normalize a property name/address token for dedup comparison
+function normPropToken(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[.,'"()&\/\-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
-  // Dedup: check for open AP deal on this company
-  const existing = await findOpenDealForCompany(companyId);
-  if (existing && (existing.properties?.dealname || '').toLowerCase() === dealName.toLowerCase()) {
-    const updates = {};
-    if (existing.properties?.hubspot_owner_id !== String(XANDER_OWNER_ID)) {
+/**
+ * Match an existing deal against a property row regardless of historical
+ * nomenclature. We consider it a match when the existing dealname contains
+ * BOTH the normalized property token AND the normalized owner token.
+ * Falls back to property-only match when owner token is missing from the name.
+ */
+function dealMatchesRow(existingDealName, row) {
+  const existing = normPropToken(existingDealName);
+  if (!existing) return false;
+  const propToken  = normPropToken(row['Property Name'] || row['Property Address']);
+  const ownerToken = normPropToken(
+    (row['True Owner Name'] || '').split(/\s+/).slice(0, 2).join(' ') // e.g. "Zale Properties"
+  );
+  if (!propToken || propToken.length < 5) return false;
+  if (!existing.includes(propToken)) return false;
+  if (ownerToken && ownerToken.length >= 4 && !existing.includes(ownerToken)) return false;
+  return true;
+}
+
+// HubSpot's state_region property is an enumeration that only accepts full
+// state names. CoStar gives us two-letter abbreviations, so map them.
+const US_STATE_MAP = {
+  AL:'Alabama', AK:'Alaska', AZ:'Arizona', AR:'Arkansas', CA:'California',
+  CO:'Colorado', CT:'Connecticut', DE:'Delaware', FL:'Florida', GA:'Georgia',
+  HI:'Hawaii', ID:'Idaho', IL:'Illinois', IN:'Indiana', IA:'Iowa',
+  KS:'Kansas', KY:'Kentucky', LA:'Louisiana', ME:'Maine', MD:'Maryland',
+  MA:'Massachusetts', MI:'Michigan', MN:'Minnesota', MS:'Mississippi',
+  MO:'Missouri', MT:'Montana', NE:'Nebraska', NV:'Nevada', NH:'New Hampshire',
+  NJ:'New Jersey', NM:'New Mexico', NY:'New York', NC:'North Carolina',
+  ND:'North Dakota', OH:'Ohio', OK:'Oklahoma', OR:'Oregon', PA:'Pennsylvania',
+  RI:'Rhode Island', SC:'South Carolina', SD:'South Dakota', TN:'Tennessee',
+  TX:'Texas', UT:'Utah', VT:'Vermont', VA:'Virginia', WA:'Washington',
+  WV:'West Virginia', WI:'Wisconsin', WY:'Wyoming', DC:'Washington DC'
+};
+function expandState(s) {
+  const v = String(s || '').trim();
+  if (!v) return '';
+  const up = v.toUpperCase();
+  return US_STATE_MAP[up] || v;  // pass through full names already
+}
+
+/** Build the deal-level field updates from a CoStar row + company basics. */
+function buildDealFieldUpdates(row, companyBasics) {
+  const updates = {};
+  const propCity  = String(row['City']  || '').trim();
+  const propState = String(row['State'] || '').trim();
+  if (propCity)  updates.city         = propCity;
+  if (propState) updates.state_region = expandState(propState);
+
+  const cp = companyBasics?.properties || {};
+  const hqCity  = (cp.city  || '').trim();
+  const hqState = (cp.state || '').trim();
+  const hqAddr  = (cp.address || '').trim();
+  const hqAddr2 = (cp.address2 || '').trim();
+  const hqZip   = (cp.zip   || '').trim();
+
+  if (hqCity || hqState) {
+    updates.hq_location = [hqCity, hqState].filter(Boolean).join(', ');
+  }
+  if (hqAddr || hqCity || hqState || hqZip) {
+    const streetFull = [hqAddr, hqAddr2].filter(Boolean).join(' ').trim();
+    const locality   = [hqCity, hqState].filter(Boolean).join(', ');
+    updates.company_hq_address = [streetFull, locality, hqZip].filter(Boolean).join(', ');
+  }
+  return updates;
+}
+
+async function createOrMergeLeaseUpDeal(companyId, row, conflictNote, companyBasics) {
+  const dealName = buildDealName(row);
+  const fieldUpdates = buildDealFieldUpdates(row, companyBasics);
+
+  // Dedup: consider ALL open AP deals on this company. Match by
+  // property-token + owner-token so historical nomenclature variants still
+  // merge. When multiple deals match, keep the OLDEST (preserves history)
+  // and archive the newer dupes. Rename the winner to the new format.
+  const openDeals = await findOpenDealsForCompany(companyId);
+  const matches   = openDeals.filter(d => dealMatchesRow(d.properties?.dealname, row));
+  if (matches.length) {
+    matches.sort((a, b) =>
+      (a.properties.hs_lastmodifieddate || '').localeCompare(
+      b.properties.hs_lastmodifieddate || ''));  // oldest first
+    const winner = matches[0];
+    const updates = { ...fieldUpdates };
+    if ((winner.properties?.dealname || '') !== dealName) updates.dealname = dealName;
+    if (winner.properties?.hubspot_owner_id !== String(XANDER_OWNER_ID)) {
       updates.hubspot_owner_id = String(XANDER_OWNER_ID);
     }
-    if (existing.properties?.deal_category !== DEAL_CATEGORY_LEASE_UP) {
+    if (winner.properties?.deal_category !== DEAL_CATEGORY_LEASE_UP) {
       updates.deal_category = DEAL_CATEGORY_LEASE_UP;
     }
-    if (Object.keys(updates).length) await updateDeal(existing.id, updates);
-    if (conflictNote) await createNoteOnDeal(existing.id, conflictNote);
-    return { dealId: existing.id, action: 'merged', name: existing.properties?.dealname };
+    if (Object.keys(updates).length) await updateDeal(winner.id, updates);
+    if (conflictNote) await createNoteOnDeal(winner.id, conflictNote);
+    // Archive newer dupes
+    for (const dup of matches.slice(1)) {
+      try { await archiveDeal(dup.id); } catch {}
+    }
+    return {
+      dealId: winner.id,
+      action: 'merged',
+      name:   dealName,
+      archivedDupes: matches.slice(1).map(d => d.id)
+    };
   }
 
   const properties = {
@@ -292,7 +414,8 @@ async function createOrMergeLeaseUpDeal(companyId, row, conflictNote) {
     pipeline:         AP_PIPELINE_ID,
     dealstage:        NEW_OPPORTUNITIES_STAGE,
     hubspot_owner_id: String(XANDER_OWNER_ID),
-    deal_category:    DEAL_CATEGORY_LEASE_UP
+    deal_category:    DEAL_CATEGORY_LEASE_UP,
+    ...fieldUpdates
   };
 
   const payload = {
@@ -431,6 +554,12 @@ async function runLeaseUpIngest(filePath, { dryRun = false, onProgress } = {}) {
       if (companyInfo.action === 'matched_by_name')   summary.companiesMatched++;
       if (companyInfo.action === 'created')           summary.companiesCreated++;
 
+      // Pull HQ basics once per owner — used to populate deal-level HQ fields
+      let companyBasics = null;
+      if (!dryRun && companyInfo.companyId) {
+        try { companyBasics = await getCompanyBasics(companyInfo.companyId); } catch {}
+      }
+
       // Step 3 — Create a deal for each property row of this owner
       const conflict = detectConflict(ownerName);
       if (conflict) summary.conflicts += ownerRows.length;
@@ -446,10 +575,13 @@ async function runLeaseUpIngest(filePath, { dryRun = false, onProgress } = {}) {
           if (dryRun) {
             dealResult = { dealId: null, action: 'would_create', name: buildDealName(row) };
           } else {
-            dealResult = await createOrMergeLeaseUpDeal(companyInfo.companyId, row, perRowNote);
+            dealResult = await createOrMergeLeaseUpDeal(companyInfo.companyId, row, perRowNote, companyBasics);
           }
           if (dealResult.action === 'created') summary.dealsCreated++;
           if (dealResult.action === 'merged')  summary.dealsMerged++;
+          if (dealResult.archivedDupes?.length) {
+            summary.dupesArchived = (summary.dupesArchived || 0) + dealResult.archivedDupes.length;
+          }
           if (dealResult.dealId) ownerDealIds.push(dealResult.dealId);
 
           summary.details.push({

@@ -173,6 +173,11 @@ async function updateDeal(dealId, properties) {
   return apiRequest('PATCH', `/crm/v3/objects/deals/${dealId}`, { properties });
 }
 
+// HubSpot archive = soft delete (90-day recovery window in UI).
+async function archiveDeal(dealId) {
+  return apiRequest('DELETE', `/crm/v3/objects/deals/${dealId}`);
+}
+
 // ---------------------------------------------------------------------------
 // Deals — search by stage + pipeline (for backfill)
 // ---------------------------------------------------------------------------
@@ -303,6 +308,23 @@ const PUBLIC_EMAIL_DOMAINS = new Set([
   'protonmail.com', 'proton.me', 'mail.com', 'yahoo.co.uk', 'ymail.com'
 ]);
 
+// Big-brand corporate domains we never trust as an owner-company identifier.
+// These attract false positives: e.g. a "Chase Hospitality" owner gets ZI
+// contacts on chase.com (the bank), which would domain-match JPMorgan Chase.
+// When ZI-derives one of these, we fall through to name-based matching.
+const AMBIGUOUS_CORPORATE_DOMAINS = new Set([
+  'chase.com', 'jpmorgan.com', 'jpmorganchase.com',
+  'wellsfargo.com', 'bankofamerica.com', 'bofa.com', 'citi.com',
+  'capitalone.com', 'usbank.com', 'pnc.com', 'tdbank.com',
+  'morganstanley.com', 'goldmansachs.com', 'blackrock.com',
+  'hsbc.com', 'barclays.com', 'ubs.com', 'db.com',
+  'amazon.com', 'apple.com', 'google.com', 'microsoft.com', 'meta.com',
+  'walmart.com', 'target.com', 'costco.com',
+  'marriott.com', 'hilton.com', 'hyatt.com',
+  'deloitte.com', 'pwc.com', 'ey.com', 'kpmg.com',
+  'related.com'  // grabbed by a "Collins Enterprises" record in our CRM
+]);
+
 /** Extract the most-common non-public email domain from a list of contacts. */
 function deriveDominantDomain(contacts) {
   const counts = {};
@@ -312,6 +334,7 @@ function deriveDominantDomain(contacts) {
     if (at < 0) continue;
     const d = email.slice(at + 1).trim();
     if (!d || PUBLIC_EMAIL_DOMAINS.has(d)) continue;
+    if (AMBIGUOUS_CORPORATE_DOMAINS.has(d)) continue;
     counts[d] = (counts[d] || 0) + 1;
   }
   const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
@@ -329,7 +352,27 @@ async function findCompanyByDomain(domain) {
 }
 
 async function getCompanyBasics(companyId) {
-  return apiRequest('GET', `/crm/v3/objects/companies/${companyId}?properties=name,domain,city,state`);
+  return apiRequest('GET', `/crm/v3/objects/companies/${companyId}?properties=name,domain,city,state,address,address2,zip,country`);
+}
+
+// Return ALL open AP deals on a company (most-recent first), not just the top one.
+async function findOpenDealsForCompany(companyId) {
+  const assoc = await apiRequest(
+    'GET',
+    `/crm/v4/objects/companies/${companyId}/associations/deals?limit=100`
+  );
+  const dealIds = (assoc.results || []).map(r => r.toObjectId).filter(Boolean);
+  if (!dealIds.length) return [];
+  const res = await apiRequest('POST', '/crm/v3/objects/deals/batch/read', {
+    inputs:     dealIds.map(id => ({ id: String(id) })),
+    properties: ['dealname', 'dealstage', 'pipeline', 'hubspot_owner_id',
+                 'deal_category', 'hs_lastmodifieddate']
+  });
+  return (res.results || [])
+    .filter(d => d.properties?.pipeline === AP_PIPELINE_ID)
+    .filter(d => !CLOSED_STAGES.has(d.properties?.dealstage))
+    .sort((a, b) => (b.properties.hs_lastmodifieddate || '').localeCompare(
+                    a.properties.hs_lastmodifieddate || ''));
 }
 
 async function updateCompany(companyId, properties) {
@@ -363,8 +406,10 @@ module.exports = {
   CLOSED_STAGES,
   apiRequest,
   findOpenDealForCompany,
+  findOpenDealsForCompany,
   createDeal,
   updateDeal,
+  archiveDeal,
   searchDealsByPipelineAndStage,
   getDealCompanies,
   findContactByEmail,
@@ -378,5 +423,6 @@ module.exports = {
   getCompanyBasics,
   updateCompany,
   createCompany,
-  PUBLIC_EMAIL_DOMAINS
+  PUBLIC_EMAIL_DOMAINS,
+  AMBIGUOUS_CORPORATE_DOMAINS
 };
