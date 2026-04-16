@@ -1,0 +1,3 @@
+{
+  "_README": "Curated owner-name -> canonical domain map. Names are normalized (lowercase, punctuation stripped). Added by Matt when CoStar and Clearbit both fail. See scripts/dry-run-pdf-ingest.js resolveCompany()."
+}
