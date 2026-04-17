@@ -75,7 +75,23 @@ const {
   createOrUpdateCompany, createOrMergeDeal, handlePdfPrimaryContact, runZiEnrichmentForOwner
 } = pdfIngest;
 
-async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress } = {}) {
+// Simple promise pool — runs up to `limit` tasks concurrently.
+async function runWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  async function runOne() {
+    while (true) {
+      const i = nextIndex++;
+      if (i >= items.length) return;
+      results[i] = await worker(items[i], i);
+    }
+  }
+  const workers = Array.from({ length: Math.min(limit, items.length) }, runOne);
+  await Promise.all(workers);
+  return results;
+}
+
+async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency = 5 } = {}) {
   const lines = fs.readFileSync(ndjsonPath, 'utf8').split('\n').filter(Boolean);
   const props = lines.map(l => JSON.parse(l));
 
@@ -139,11 +155,17 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress } = {}) {
     warnings: []
   };
 
-  let idx = 0;
-  for (const [key, grp] of ownerGroups) {
-    idx++;
+  // Run owner groups in parallel with bounded concurrency.
+  // The HS owners cache and Clearbit cache are single-process maps — safe.
+  // Different owner groups don't share mutable state. Counter and report
+  // arrays are updated concurrently but JS is single-threaded so ++ is atomic.
+  let completed = 0;
+  const totalOwners = ownerGroups.size;
+  const groupsArr = Array.from(ownerGroups.entries());
+
+  await runWithConcurrency(groupsArr, concurrency, async ([key, grp]) => {
     const { ownerName, entity, props: ownerProps } = grp;
-    if (onProgress) onProgress({ current: idx, total: ownerGroups.size, owner: ownerName });
+    try {
 
     // 1) Resolve domain
     const costarDomain = cleanDomain(entity?.website);
@@ -163,7 +185,7 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress } = {}) {
       report.skipped_no_domain_owners.push({ ownerName, properties_in_batch: ownerProps.length, notes: resolved.notes });
       report.summary.deals.skipped_no_domain += ownerProps.length;
       report.summary.skipped_no_domain_owners++;
-      continue;
+      return;
     }
 
     // 2) Resolve ROE rep
@@ -189,7 +211,7 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress } = {}) {
           });
           report.summary.deals.skipped_no_rep += ownerProps.length;
           report.summary.reps.no_rep_flagged++;
-          continue;
+          return;
         }
       }
     } else if (typeof roe.rep === 'string') {
@@ -204,7 +226,7 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress } = {}) {
       });
       report.summary.deals.skipped_no_rep += ownerProps.length;
       report.summary.reps.no_rep_flagged++;
-      continue;
+      return;
     }
     // Translate rep name → HS owner ID
     const roeOwnerId = await getHsOwnerIdByName(repName);
@@ -213,7 +235,7 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress } = {}) {
         warnings: [`ROE rep "${repName}" not found in HubSpot owners`] });
       report.summary.deals.skipped_no_rep += ownerProps.length;
       report.summary.reps.no_rep_flagged++;
-      continue;
+      return;
     }
     if (roe.rule === 'TOP_50' || roe.rule === 'OWNER_ASSIGNMENT') report.summary.reps.via_roe++;
     else if (/state/i.test(roe.rule || '')) report.summary.reps.via_territory++;
@@ -339,8 +361,14 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress } = {}) {
       properties: perProp
     });
 
-    if (idx % 10 === 0) console.error(`  … processed ${idx}/${ownerGroups.size} owners`);
-  }
+    } catch (err) {
+      report.warnings.push(`owner ${ownerName}: ${err.message}`);
+    } finally {
+      completed++;
+      if (onProgress) onProgress({ current: completed, total: totalOwners, owner: ownerName });
+      if (completed % 10 === 0) console.error(`  … processed ${completed}/${totalOwners} owners`);
+    }
+  });
 
   return report;
 }
