@@ -1572,6 +1572,7 @@ async function downloadSlackFile(url, client, ext = 'xlsx') {
   const os    = require('os');
 
   // If it's a files.slack.com URL, we need the bot token for auth
+  const downloadUrl = url;
   const safeExt = String(ext || 'xlsx').replace(/^\./, '').replace(/[^a-z0-9]/gi, '') || 'xlsx';
   const tmpPath = path.join(os.tmpdir(), `costar-sync-${Date.now()}.${safeExt}`);
 
