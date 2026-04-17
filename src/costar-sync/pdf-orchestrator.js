@@ -91,7 +91,7 @@ async function runWithConcurrency(items, limit, worker) {
   return results;
 }
 
-async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency = 5 } = {}) {
+async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency = 3 } = {}) {
   const lines = fs.readFileSync(ndjsonPath, 'utf8').split('\n').filter(Boolean);
   const props = lines.map(l => JSON.parse(l));
 
