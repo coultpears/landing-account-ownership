@@ -1344,6 +1344,7 @@ app.command('/apbot', async ({ command, ack, respond, client }) => {
 const costarSync    = require('./src/costar-sync');
 const leaseup       = require('./src/costar-sync/leaseup');
 const leaseupIngest = require('./src/costar-sync/leaseup-ingest');
+const pdfOrchestrator = require('./src/costar-sync/pdf-orchestrator');
 
 // Lease-up mode detection: fires when Xander uploads (env var) OR the filename
 // looks lease-up-specific. In lease-up mode, after the CoStar sync we iterate
@@ -1369,13 +1370,14 @@ app.event('message', async ({ event, client }) => {
   const syncChannel = process.env.COSTAR_SYNC_CHANNEL;
   if (syncChannel && event.channel !== syncChannel) return;
 
-  // Find the first xlsx/csv file in the message
+  // Find the first CoStar-compatible file: PDF (preferred, new property-level
+  // ingest) or XLSX/CSV (legacy paths).
   const file = event.files.find(f => {
     const name = (f.name || '').toLowerCase();
-    return name.endsWith('.xlsx') || name.endsWith('.csv') || name.endsWith('.xls');
+    return name.endsWith('.pdf') || name.endsWith('.xlsx') || name.endsWith('.csv') || name.endsWith('.xls');
   });
 
-  if (!file) return; // no spreadsheet attached — ignore
+  if (!file) return; // no compatible file attached — ignore
 
   // Check if filename looks like a CoStar export (optional safety check)
   const fileName = (file.name || '').toLowerCase();
@@ -1441,7 +1443,16 @@ app.event('message', async ({ event, client }) => {
   });
 
   try {
-    const filePath = await downloadSlackFile(pending.fileUrl, client);
+    const isPdf = /\.pdf$/i.test(pending.fileName || '');
+    const filePath = await downloadSlackFile(pending.fileUrl, client, isPdf ? 'pdf' : 'xlsx');
+
+    // PDF → CoStar property-level ingest (current canonical path)
+    if (isPdf) {
+      await runPdfIngestFromFile(filePath, pending.channel, event.thread_ts, client, isDryRun);
+      try { fs.unlinkSync(filePath); } catch {}
+      log('pdf_ingest_done', { ms: Date.now() - t0 });
+      return;
+    }
 
     if (leaseupIngest.isPropertyLevelFile(filePath)) {
       await runPropertyLevelIngest(filePath, pending.channel, event.thread_ts, client, isDryRun);
@@ -1497,7 +1508,16 @@ async function runCostarSyncFromFile(file, event, client, isDryRun, leaseUpMode 
   });
 
   try {
-    const filePath = await downloadSlackFile(fileUrl, client);
+    const isPdf = /\.pdf$/i.test(file.name || '');
+    const filePath = await downloadSlackFile(fileUrl, client, isPdf ? 'pdf' : 'xlsx');
+
+    // PDF → CoStar property-level ingest (current canonical path)
+    if (isPdf) {
+      await runPdfIngestFromFile(filePath, event.channel, event.ts, client, isDryRun);
+      try { fs.unlinkSync(filePath); } catch {}
+      log('pdf_ingest_done', { ms: Date.now() - t0 });
+      return;
+    }
 
     // Schema-detect: property-level file (Xander's lease-up hunt) vs
     // company-level CoStar export. They use different ingest paths entirely.
@@ -1547,15 +1567,13 @@ setInterval(() => {
  * Download a Slack-hosted file to a temp path.
  * Supports both Slack file URLs and direct download URLs.
  */
-async function downloadSlackFile(url, client) {
+async function downloadSlackFile(url, client, ext = 'xlsx') {
   const https = require('https');
   const os    = require('os');
 
-  // Extract file ID from Slack URL if needed
-  let downloadUrl = url;
-
   // If it's a files.slack.com URL, we need the bot token for auth
-  const tmpPath = path.join(os.tmpdir(), `costar-sync-${Date.now()}.xlsx`);
+  const safeExt = String(ext || 'xlsx').replace(/^\./, '').replace(/[^a-z0-9]/gi, '') || 'xlsx';
+  const tmpPath = path.join(os.tmpdir(), `costar-sync-${Date.now()}.${safeExt}`);
 
   return new Promise((resolve, reject) => {
     const headers = {};
@@ -1678,7 +1696,98 @@ function summaryStats(s) {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Property-level ingest — Xander's lease-up hunts (CoStar property exports)
+// PDF ingest — CoStar "Space Availability with Photo Report" (PDF-only path,
+// canonical as of 2026-04-16). Spawns Python parser, then runs orchestrator.
+// See: src/costar-sync/pdf-orchestrator.js
+// ---------------------------------------------------------------------------
+
+async function runPdfIngestFromFile(filePath, channel, threadTs, client, isDryRun) {
+  const { spawn } = require('child_process');
+  const os    = require('os');
+
+  await client.chat.postMessage({
+    channel, thread_ts: threadTs,
+    text: `_CoStar PDF detected — parsing${isDryRun ? ' (DRY RUN)' : ''}…_`
+  });
+
+  // 1. Parse PDF → NDJSON via python subprocess
+  const ndjsonPath = path.join(os.tmpdir(), `costar-parsed-${Date.now()}.ndjson`);
+  const parseScript = path.join(__dirname, 'scripts', 'parse-costar-pdf.py');
+
+  await new Promise((resolve, reject) => {
+    const writeStream = fs.createWriteStream(ndjsonPath);
+    const p = spawn('python', [parseScript, filePath], { windowsHide: true });
+    p.stdout.pipe(writeStream);
+    let stderr = '';
+    p.stderr.on('data', d => stderr += d.toString());
+    p.on('error', reject);
+    p.on('close', code => {
+      writeStream.end();
+      if (code !== 0) return reject(new Error(`PDF parse failed (exit ${code}): ${stderr.slice(0, 500)}`));
+      resolve(stderr);
+    });
+  });
+
+  await client.chat.postMessage({
+    channel, thread_ts: threadTs,
+    text: `_PDF parsed — running ingest${isDryRun ? ' (DRY RUN)' : ''}…_`
+  });
+
+  // 2. Orchestrate the ingest
+  const report = await pdfOrchestrator.runPdfIngest(ndjsonPath, { dryRun: isDryRun });
+  try { fs.unlinkSync(ndjsonPath); } catch {}
+
+  // 3. Post summary
+  const s = report.summary;
+  const lines = [
+    `*CoStar PDF Ingest ${isDryRun ? '(DRY RUN) ' : ''}Complete*`,
+    `• Properties processed: *${s.processed}* of ${s.total_properties}` +
+      (s.skipped_no_owner ? `  _(skipped ${s.skipped_no_owner} no-owner)_` : '') +
+      (s.skipped_hoa_trust_individual ? `  _(filtered ${s.skipped_hoa_trust_individual} HOA/trust/individual)_` : ''),
+    `• Deals — created: *${s.deals.created}* | merged: *${s.deals.merged}* | dupes archived: ${s.deals.dupes_archived} | location-override notes: ${s.deals.location_overrides}`,
+    `• Companies — CoStar domain: ${s.companies.tier1_costar_domain} | email-domain: ${s.companies.tier125_email_domain} | Clearbit: ${s.companies.tier15_clearbit} | name: ${s.companies.tier2_name} | created: ${s.companies.created} | enriched: ${s.companies.enriched}`,
+    `• Contacts — PDF primary: ${s.contacts.pdf_primary_created} new, ${s.contacts.pdf_primary_associated} associated | ZI: ${s.contacts.zi_created} new, ${s.contacts.zi_associated} associated`,
+    `• Rep assignments — ROE: ${s.reps.via_roe} | active-engagement override: *${s.reps.via_active_engagement}* | territory: ${s.reps.via_territory} | *flagged no rep: ${s.reps.no_rep_flagged}*`
+  ];
+  await client.chat.postMessage({ channel, thread_ts: threadTs, text: lines.join('\n') });
+
+  // 4. Skipped owners (needs manual triage)
+  if (report.skipped_no_domain_owners.length || report.skipped_no_rep_owners.length) {
+    const parts = ['*Needs manual triage:*'];
+    if (report.skipped_no_domain_owners.length) {
+      parts.push(`\n⚠ *No domain resolvable* — add to \`data/owner-domains.json\` if legitimate:`);
+      parts.push(report.skipped_no_domain_owners.slice(0, 20)
+        .map(s => `  • ${s.ownerName} (${s.properties_in_batch} props)`).join('\n'));
+    }
+    if (report.skipped_no_rep_owners.length) {
+      parts.push(`\n⚠ *No rep resolvable* — check HQ or territory coverage:`);
+      parts.push(report.skipped_no_rep_owners.slice(0, 20)
+        .map(s => `  • ${s.ownerName} — HQ: ${s.hqLocation || 'unknown'} (${s.properties_in_batch} props)`).join('\n'));
+    }
+    await client.chat.postMessage({ channel, thread_ts: threadTs, text: parts.join('\n').slice(0, 3500) });
+  }
+
+  // 5. Active-engagement overrides (informational)
+  if (report.roe_active_mismatches.length) {
+    const text = `*Active-engagement overrides* (ROE deferred to active rep, ${report.roe_active_mismatches.length}):\n` +
+      report.roe_active_mismatches.slice(0, 15).map(m =>
+        `  • ${m.ownerName} — ROE *${m.roeRep}*, active rep holds ${m.activeDealCount} deal(s)`
+      ).join('\n') +
+      (report.roe_active_mismatches.length > 15 ? `\n_… and ${report.roe_active_mismatches.length - 15} more_` : '');
+    await client.chat.postMessage({ channel, thread_ts: threadTs, text: text.slice(0, 3500) });
+  }
+
+  // 6. Warnings (ZI timeouts, read errors, etc)
+  if (report.warnings.length) {
+    await client.chat.postMessage({
+      channel, thread_ts: threadTs,
+      text: `*Warnings:* ${report.warnings.length}\n\`\`\`${report.warnings.slice(0, 8).join('\n').slice(0, 2500)}\`\`\``
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Property-level ingest — Xander's lease-up hunts (CoStar XLSX exports, legacy)
 // ---------------------------------------------------------------------------
 
 async function runPropertyLevelIngest(filePath, channel, threadTs, client, isDryRun) {

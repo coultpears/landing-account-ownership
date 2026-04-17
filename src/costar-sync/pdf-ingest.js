@@ -436,7 +436,8 @@ const DEAL_FIELD_POLICY = {
   dealstage:             'never',
   pipeline:              'never',
   amount:                'never',
-  closedate:             'never'
+  closedate:             'never',
+  deal_category:         'never'   // rep-controlled, legacy "Lease Up" default removed
 };
 
 const COMPANY_FIELD_POLICY = {
@@ -546,11 +547,11 @@ function buildDealFields(prop, ownerEntity) {
     costar_property_notes: prop.property_notes,
     costar_last_synced: String(Date.now()),
     // System — set on create; NEVER updated on re-surface (per policy)
+    // deal_category is NOT set by ingest (rep-controlled; legacy Lease Up removed)
     dealname: null,
     pipeline: AP_PIPELINE_ID,
     dealstage: NEW_OPPORTUNITIES_STAGE,
-    hubspot_owner_id: String(XANDER_OWNER_ID),          // TODO: rep routing
-    deal_category: DEAL_CATEGORY_LEASE_UP               // TODO: rep routing
+    hubspot_owner_id: null  // orchestrator sets this per resolved rep
   };
 }
 
@@ -724,14 +725,18 @@ async function runZiEnrichmentForOwner({ ownerName, companyId, dealIds, dealOwne
     }
   }
 
-  // Fan contacts out to remaining deals in the batch
-  if (dealIds.length > 1) {
+  // Fan ALL company contacts out to EVERY deal in the batch. This ensures:
+  //   (a) deals get contacts even when ZI returned 0 for this owner (existing
+  //       HS contacts from manual adds / prior runs still flow to new deals)
+  //   (b) re-ingest of a previously-contactless deal backfills it
+  if (companyId && dealIds.length) {
     const contactIds = await fetchCompanyContactIds(companyId);
-    for (const dealId of dealIds.slice(1)) {
+    for (const dealId of dealIds) {
       for (const ctid of contactIds) {
         try { await associateContactToDeal(ctid, dealId); } catch {}
       }
     }
+    result.fanned_out_total = contactIds.length * dealIds.length;
   }
   return result;
 }
@@ -826,8 +831,8 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
       dealname: dealName,
       pipeline: AP_PIPELINE_ID,
       dealstage: DEAL_STAGE_FOR_NEW,
-      hubspot_owner_id: String(dealOwnerId),
-      ...(DEAL_CATEGORY_LEASE_UP ? { deal_category: DEAL_CATEGORY_LEASE_UP } : {})
+      hubspot_owner_id: String(dealOwnerId)
+      // deal_category intentionally not set — rep-controlled
     },
     associations: [{
       to: { id: String(companyId) },
