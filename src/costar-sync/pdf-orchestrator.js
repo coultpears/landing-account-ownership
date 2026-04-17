@@ -12,9 +12,49 @@
  * Input: parsed NDJSON rows from scripts/parse-costar-pdf.py
  */
 
-const fs  = require('fs');
-const hsx = require('./hs-extra');
+const fs   = require('fs');
+const path = require('path');
+const hsx  = require('./hs-extra');
 const pdfIngest = require('./pdf-ingest');
+const engine    = require('../engine');
+
+// Load assignments once for sub-market disambiguation
+let _assignmentsCache = null;
+function loadAssignments() {
+  if (_assignmentsCache) return _assignmentsCache;
+  try {
+    const p = path.join(__dirname, '..', '..', 'data', 'assignments.json');
+    _assignmentsCache = JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch { _assignmentsCache = { stateAssignments: [], ownerAssignments: [] }; }
+  return _assignmentsCache;
+}
+
+/**
+ * Disambiguate multi-rep state results by preferring sub-market specialists
+ * over state catch-all entries. A "specialist" is an assignment with a
+ * non-empty subMarkets list; a "catch-all" has subMarkets=[]. When the HQ
+ * matches BOTH, return the specialist.
+ *
+ * Example: Miami, FL matches both Scout (FL catch-all, no subMarkets) and
+ * Renato (Miami subMarket). Prefer Renato.
+ */
+function pickSpecialist(hqLocation) {
+  const assignments = loadAssignments();
+  const stateResult = engine.getStateReps(hqLocation, assignments);
+  if (!stateResult || !stateResult.reps || stateResult.reps.length <= 1) return null;
+
+  // Re-match entries manually to find which had non-empty subMarkets
+  const stateCode = stateResult.stateCode;
+  const marketNorm = String(hqLocation || '').toLowerCase();
+  const candidates = (assignments.stateAssignments || [])
+    .filter(a => (a.states || []).includes(stateCode));
+  const specialists = candidates.filter(a =>
+    Array.isArray(a.subMarkets) && a.subMarkets.length > 0 &&
+    a.subMarkets.some(sm => marketNorm.includes(sm.toLowerCase())));
+  if (specialists.length === 1) return specialists[0].rep;
+  if (specialists.length > 1)   return null; // still ambiguous — flag upstream
+  return null; // only catch-alls matched, let caller handle
+}
 
 const {
   apiRequest, findOpenDealsForCompany, findContactByEmail
@@ -131,21 +171,26 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress } = {}) {
     const roe = resolveRoeRep(ownerName, hqLocation);
 
     // engine.resolve() sets rep to string for Top 50 / owner-assignment,
-    // but to an array of reps for state fallback. Normalize + pick or flag.
+    // but to an array of reps for state fallback. Normalize.
     let repName = null;
     if (Array.isArray(roe.rep)) {
       if (roe.rep.length === 1) {
         repName = roe.rep[0];
       } else if (roe.rep.length > 1) {
-        // Ambiguous: multiple reps cover this state + sub-market couldn't disambiguate.
-        // Flag for manual triage.
-        report.skipped_no_rep_owners.push({
-          ownerName, hqLocation, properties_in_batch: ownerProps.length,
-          warnings: [`Territory lookup returned multiple reps: ${roe.rep.join(', ')} — manual triage needed`]
-        });
-        report.summary.deals.skipped_no_rep += ownerProps.length;
-        report.summary.reps.no_rep_flagged++;
-        continue;
+        // Multi-rep state result — prefer sub-market specialist over catch-all.
+        // (e.g. Miami, FL → [Scout, Renato] → Renato wins)
+        const specialist = pickSpecialist(hqLocation);
+        if (specialist) {
+          repName = specialist;
+        } else {
+          report.skipped_no_rep_owners.push({
+            ownerName, hqLocation, properties_in_batch: ownerProps.length,
+            warnings: [`Territory lookup returned multiple reps: ${roe.rep.join(', ')} — no specialist disambiguation — manual triage`]
+          });
+          report.summary.deals.skipped_no_rep += ownerProps.length;
+          report.summary.reps.no_rep_flagged++;
+          continue;
+        }
       }
     } else if (typeof roe.rep === 'string') {
       repName = roe.rep;
