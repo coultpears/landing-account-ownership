@@ -134,9 +134,14 @@ function zoomRequest(method, apiPath, body = null, token = null) {
 
 let _token = null;
 let _tokenExpiresAt = 0;
+let _authInFlight = null;  // shared promise for concurrent callers
 
 async function authenticate() {
   if (_token && Date.now() < _tokenExpiresAt) return _token;
+
+  // Concurrent callers share a single in-flight auth request. Prevents
+  // hitting ZI's rate limit when multiple owner groups start in parallel.
+  if (_authInFlight) return _authInFlight;
 
   const username = process.env.ZOOMINFO_USERNAME || 'carter.harris@hellolanding.com';
   const password = process.env.ZOOMINFO_PASSWORD;
@@ -144,12 +149,30 @@ async function authenticate() {
     throw new Error('ZOOMINFO_PASSWORD not set in env');
   }
 
-  const res = await zoomRequest('POST', '/authenticate', { username, password });
-  if (!res.jwt) throw new Error('ZoomInfo auth failed: no jwt in response');
-
-  _token = res.jwt;
-  _tokenExpiresAt = Date.now() + 55 * 60 * 1000;  // 55min safety margin
-  return _token;
+  _authInFlight = (async () => {
+    try {
+      // Retry auth on 429 with exponential backoff — covers cases where our
+      // token expired mid-run and ZI rate-limits the refresh attempt.
+      let lastErr = null;
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        try {
+          const res = await zoomRequest('POST', '/authenticate', { username, password });
+          if (!res.jwt) throw new Error('ZoomInfo auth failed: no jwt in response');
+          _token = res.jwt;
+          _tokenExpiresAt = Date.now() + 55 * 60 * 1000;  // 55min safety margin
+          return _token;
+        } catch (e) {
+          lastErr = e;
+          if (!/429/.test(e.message || '') || attempt === 4) throw e;
+          await sleep(1500 * attempt);  // 1.5s, 3s, 4.5s
+        }
+      }
+      throw lastErr;
+    } finally {
+      _authInFlight = null;
+    }
+  })();
+  return _authInFlight;
 }
 
 // ---------------------------------------------------------------------------
