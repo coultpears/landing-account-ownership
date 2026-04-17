@@ -45,6 +45,23 @@ const TARGET_TITLE_KEYWORDS = [
   'vice president', 'vp ', ' vp'
 ];
 
+// Priority keywords — contacts whose titles include one of these sort first,
+// with earlier entries ranking higher than later ones. Overlap with
+// TARGET_TITLE_KEYWORDS is fine (a match in EITHER list qualifies the contact;
+// priority only affects ordering within qualified contacts).
+// Order matters — index is the priority rank.
+const PRIORITY_TITLE_KEYWORDS = [
+  'asset',
+  'revenue',
+  'portfolio',
+  'operations',
+  'financial',
+  'strategy',
+  'strategic',
+  'development',
+  'regional'
+];
+
 // Exclusion list — if any of these appear in the title, drop the contact even
 // if a positive keyword matched. Catches "Property Management Accountant",
 // "Development Financial Analyst", "Affordable Housing Development", etc.
@@ -204,7 +221,19 @@ function titleMatchesTarget(title) {
   if (!title) return false;
   const lower = title.toLowerCase();
   if (TITLE_EXCLUDE_KEYWORDS.some(kw => lower.includes(kw))) return false;
-  return TARGET_TITLE_KEYWORDS.some(kw => lower.includes(kw));
+  return TARGET_TITLE_KEYWORDS.some(kw => lower.includes(kw))
+      || PRIORITY_TITLE_KEYWORDS.some(kw => lower.includes(kw));
+}
+
+// Returns the index of the first PRIORITY_TITLE_KEYWORDS hit (0 = top),
+// or 999 if no priority keyword matched. Used as the primary sort key.
+function titlePriorityScore(title) {
+  if (!title) return 999;
+  const lower = title.toLowerCase();
+  for (let i = 0; i < PRIORITY_TITLE_KEYWORDS.length; i++) {
+    if (lower.includes(PRIORITY_TITLE_KEYWORDS[i])) return i;
+  }
+  return 999;
 }
 
 async function findRelevantContacts(companyName, { maxResults = 20 } = {}) {
@@ -213,11 +242,17 @@ async function findRelevantContacts(companyName, { maxResults = 20 } = {}) {
   const searchResults = await searchContacts(companyName, { maxResults: 100 });
   if (!searchResults.length) return [];
 
-  // Filter: must have email or phone, and title must match target keywords
+  // Filter: must have email or phone, and title must match target OR priority keywords.
+  // Sort: priority rank asc (lower index = higher priority), then accuracy desc.
   const candidates = searchResults
     .filter(c => c.hasEmail || c.hasDirectPhone || c.hasMobilePhone)
     .filter(c => titleMatchesTarget(c.jobTitle))
-    .sort((a, b) => (b.contactAccuracyScore || 0) - (a.contactAccuracyScore || 0))
+    .sort((a, b) => {
+      const pa = titlePriorityScore(a.jobTitle);
+      const pb = titlePriorityScore(b.jobTitle);
+      if (pa !== pb) return pa - pb;
+      return (b.contactAccuracyScore || 0) - (a.contactAccuracyScore || 0);
+    })
     .slice(0, maxResults);
 
   if (!candidates.length) return [];
@@ -237,6 +272,8 @@ module.exports = {
   enrichContactsById,
   findRelevantContacts,
   titleMatchesTarget,
+  titlePriorityScore,
   TARGET_TITLE_KEYWORDS,
+  PRIORITY_TITLE_KEYWORDS,
   TITLE_EXCLUDE_KEYWORDS
 };
