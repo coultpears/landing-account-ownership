@@ -1736,7 +1736,7 @@ async function runPdfIngestFromFile(filePath, channel, threadTs, client, isDryRu
 
   // 2. Orchestrate the ingest with periodic Slack progress updates.
   //    Post every 20 owners processed (~12% increments); avoids rate-limit
-  //    churn while giving reps visibility across a 20-minute run.
+  //    churn while giving reps visibility across a multi-minute run.
   let lastPost = 0;
   const report = await pdfOrchestrator.runPdfIngest(ndjsonPath, {
     dryRun: isDryRun,
@@ -1754,6 +1754,16 @@ async function runPdfIngestFromFile(filePath, channel, threadTs, client, isDryRu
     }
   });
   try { fs.unlinkSync(ndjsonPath); } catch {}
+
+  // Persist report for in-thread "add contacts" retry (24hr effective TTL —
+  // Cloud Run tmp is ephemeral across container restarts/scale-ups).
+  if (!isDryRun && threadTs) {
+    try {
+      const os = require('os');
+      const reportPath = path.join(os.tmpdir(), `ingest-${threadTs}.json`);
+      fs.writeFileSync(reportPath, JSON.stringify(report));
+    } catch (e) { log('ingest_report_persist_error', { error: e.message }); }
+  }
 
   // 3. Post summary
   const s = report.summary;
@@ -1802,6 +1812,116 @@ async function runPdfIngestFromFile(filePath, channel, threadTs, client, isDryRu
       text: `*Warnings:* ${report.warnings.length}\n\`\`\`${report.warnings.slice(0, 8).join('\n').slice(0, 2500)}\`\`\``
     });
   }
+
+  // 7. Help hint — let the rep know they can ask for a ZI retry in-thread.
+  if (!isDryRun) {
+    await client.chat.postMessage({
+      channel, thread_ts: threadTs,
+      text: `_Tip: reply *\`add contacts\`* in this thread to re-run ZI enrichment for any owners that had errors or got zero contacts._`
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// "add contacts" in-thread retry — rep types this in the reply to a completed
+// ingest, bot retries ZI enrichment only for owners that had warnings OR zero
+// contacts created on the first pass.
+// ---------------------------------------------------------------------------
+
+app.event('message', async ({ event, client }) => {
+  if (!event.thread_ts) return;
+  const text = (event.text || '').toLowerCase().trim();
+  if (!/^(add|enrich)\s+contacts(\s+all)?$/.test(text)) return;
+
+  const os = require('os');
+  const reportPath = path.join(os.tmpdir(), `ingest-${event.thread_ts}.json`);
+  if (!fs.existsSync(reportPath)) {
+    await client.chat.postMessage({
+      channel: event.channel, thread_ts: event.thread_ts,
+      text: `_No ingest report found for this thread. Report may have expired (container restart) or this isn't a CoStar PDF ingest thread._`
+    });
+    return;
+  }
+
+  const forceAll = /\ball$/.test(text);
+  try {
+    await runAddContactsRetry(event, client, reportPath, forceAll);
+  } catch (err) {
+    log('add_contacts_error', { error: err.message, thread_ts: event.thread_ts });
+    await client.chat.postMessage({
+      channel: event.channel, thread_ts: event.thread_ts,
+      text: `Error: ${err.message}`
+    });
+  }
+});
+
+async function runAddContactsRetry(event, client, reportPath, forceAll) {
+  const pdfIngest = require('./src/costar-sync/pdf-ingest');
+  const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+
+  const retryOwners = (report.owners || []).filter(o => {
+    if (!o.company?.id) return false;
+    if (forceAll) return true;
+    const ziWarning = (report.warnings || []).some(w => String(w).includes(o.ownerName));
+    const zi = o.contacts?.zi || {};
+    const noZi = (zi.ziFound === 0) || (zi.created === 0 && zi.associated === 0);
+    return ziWarning || noZi;
+  });
+
+  if (!retryOwners.length) {
+    await client.chat.postMessage({
+      channel: event.channel, thread_ts: event.thread_ts,
+      text: `_No owners need retry — all got ZI enrichment on the first pass. Use \`add contacts all\` to force a full re-run._`
+    });
+    return;
+  }
+
+  await client.chat.postMessage({
+    channel: event.channel, thread_ts: event.thread_ts,
+    text: `_Re-running ZI for *${retryOwners.length}* owner(s) with missing/failed enrichment…_`
+  });
+
+  let totalCreated = 0, totalAssociated = 0, totalFound = 0;
+  const errors = [];
+  for (const o of retryOwners) {
+    const dealIds = (o.properties || []).map(p => p.dealId).filter(Boolean);
+    const dealOwnerId = o.rep?.final?.ownerId;
+    if (!dealIds.length || !dealOwnerId || !o.company?.id) {
+      errors.push(`${o.ownerName}: missing companyId/dealIds/ownerId in report`);
+      continue;
+    }
+    try {
+      const r = await pdfIngest.runZiEnrichmentForOwner({
+        ownerName: o.ownerName,
+        companyId: o.company.id,
+        dealIds,
+        dealOwnerId,
+        dryRun: false
+      });
+      totalCreated += r.created || 0;
+      totalAssociated += r.associated || 0;
+      totalFound += r.ziFound || 0;
+      for (const e of (r.errors || [])) errors.push(e);
+    } catch (e) {
+      errors.push(`${o.ownerName}: ${e.message}`);
+    }
+  }
+
+  const lines = [
+    `*ZI Retry Complete*`,
+    `• Owners retried: ${retryOwners.length}`,
+    `• ZI contacts found: ${totalFound}`,
+    `• New contacts created: ${totalCreated}`,
+    `• Total associations made: ${totalAssociated}`
+  ];
+  if (errors.length) {
+    lines.push(`• Errors: ${errors.length}`);
+    lines.push('```' + errors.slice(0, 8).join('\n').slice(0, 2500) + '```');
+  }
+  await client.chat.postMessage({
+    channel: event.channel, thread_ts: event.thread_ts,
+    text: lines.join('\n')
+  });
 }
 
 // ---------------------------------------------------------------------------
