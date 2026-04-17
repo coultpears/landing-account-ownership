@@ -69,7 +69,7 @@
     },
     {
       "rep": "Scout Bishop",
-      "states": ["GA", "VA", "MD", "DC", "MT", "WY", "AK", "WV"],
+      "states": ["GA", "VA", "MD", "DC", "MT", "WY", "AK"],
       "subMarkets": [],
       "region": "Southeast + Rockies",
       "assignedAt": "2026-03-18T00:00:00Z"
@@ -107,10 +107,18 @@
     },
     {
       "rep": "Richard Baugh",
-      "states": ["IL", "OH", "WI", "ND", "SD", "IN", "MN", "MI"],
+      "states": ["IL", "OH", "WI", "ND", "SD"],
       "subMarkets": [],
       "region": "Upper Midwest + Great Lakes",
-      "assignedAt": "2026-03-16T00:00:00Z"
+      "assignedAt": "2026-03-16T00:00:00Z",
+      "notes": "IN/MN/MI transferred to Cameron Copeland 2026-04-17"
+    },
+    {
+      "rep": "Cameron Copeland",
+      "states": ["IN", "MN", "MI", "WV"],
+      "subMarkets": [],
+      "region": "Great Lakes + Appalachia",
+      "assignedAt": "2026-04-17T00:00:00Z"
     },
     {
       "rep": "Raegan Harris",
