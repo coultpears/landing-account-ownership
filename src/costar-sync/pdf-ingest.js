@@ -64,11 +64,31 @@ const path  = require('path');
 const https = require('https');
 const hsx   = require('./hs-extra');
 
+const engine = require('../engine');
+const zi     = require('./zoominfo');
+
 const {
   AP_PIPELINE_ID, NEW_OPPORTUNITIES_STAGE, XANDER_OWNER_ID, DEAL_CATEGORY_LEASE_UP,
   apiRequest, findOpenDealsForCompany, findCompanyByDomain,
-  findContactByEmail, PUBLIC_EMAIL_DOMAINS, AMBIGUOUS_CORPORATE_DOMAINS
+  findContactByEmail, findContactByNameAtCompany, createContact,
+  associateContactToCompany, associateContactToDeal,
+  createCompany, updateCompany, getCompanyBasics,
+  updateDeal, archiveDeal, createNoteOnDeal, deriveDominantDomain,
+  PUBLIC_EMAIL_DOMAINS, AMBIGUOUS_CORPORATE_DOMAINS
 } = hsx;
+
+// ---------------------------------------------------------------------------
+// Stage + pipeline constants
+// ---------------------------------------------------------------------------
+
+// Matt is running a test stage during initial rollout. All new deals go here
+// until he flips the switch. When he signals production, change this constant
+// back to NEW_OPPORTUNITIES_STAGE.
+const TEST_STAGE = '1343039756';
+const DEAL_STAGE_FOR_NEW = TEST_STAGE;
+
+// Active-engagement lookback window
+const ACTIVE_ENGAGEMENT_DAYS = 60;
 
 // ---------------------------------------------------------------------------
 // Name normalization & similarity
@@ -547,6 +567,320 @@ function buildCompanyFields(ownerEntity) {
 }
 
 // ---------------------------------------------------------------------------
+// Rep resolution — ROE cascade + active-engagement override
+// ---------------------------------------------------------------------------
+
+// Cache HS owner lookups (rep name → hubspot_owner_id)
+let _hsOwnersCache = null;
+async function getHsOwnerIdByName(repName) {
+  if (!repName) return null;
+  if (!_hsOwnersCache) {
+    _hsOwnersCache = {};
+    let after;
+    do {
+      const res = await apiRequest('GET', `/crm/v3/owners${after ? `?after=${after}` : ''}`);
+      for (const o of (res.results || [])) {
+        const fullName = `${o.firstName || ''} ${o.lastName || ''}`.trim();
+        if (fullName) _hsOwnersCache[fullName.toLowerCase()] = String(o.id);
+        if (o.email) _hsOwnersCache[o.email.toLowerCase()] = String(o.id);
+      }
+      after = res.paging?.next?.after;
+    } while (after);
+  }
+  return _hsOwnersCache[repName.toLowerCase()] || null;
+}
+
+/**
+ * Resolve the ROE rep name for an owner using the existing engine.resolve()
+ * cascade. Returns { rep, rule, matchedOwner, explanation, warnings, conflict }.
+ *
+ * The caller should use this rep as the DEFAULT, then check active engagement
+ * to potentially override.
+ */
+function resolveRoeRep(ownerName, trueOwnerHqLocation) {
+  try {
+    const result = engine.resolve({
+      ownerName,
+      market: trueOwnerHqLocation,      // engine keys territory on the query market
+      isLeaseUp: false,                 // PDF ingest is not lease-up-only anymore
+      ownerHQ: trueOwnerHqLocation
+    });
+    return result;
+  } catch (e) {
+    return { rep: null, rule: null, explanation: `engine.resolve() error: ${e.message}`, warnings: [], conflict: false };
+  }
+}
+
+/**
+ * Active-engagement override. Given an existing HS company and a default
+ * ROE rep, check if any of the company's open deals has engagement in the
+ * last ACTIVE_ENGAGEMENT_DAYS. If yes, return that rep's owner ID — they
+ * keep ownership regardless of ROE.
+ *
+ * Returns { activeOwnerId, activeRepName, dealCount, lastActivityAt } or null.
+ */
+async function findActiveEngagementRep(companyId) {
+  if (!companyId) return null;
+  try {
+    const deals = await findOpenDealsForCompany(companyId);
+    if (!deals.length) return null;
+    const cutoff = Date.now() - ACTIVE_ENGAGEMENT_DAYS * 24 * 60 * 60 * 1000;
+    const active = deals.filter(d => {
+      const modified  = Date.parse(d.properties?.hs_lastmodifieddate || '') || 0;
+      const contacted = Date.parse(d.properties?.notes_last_contacted || '') || 0;
+      return Math.max(modified, contacted) >= cutoff;
+    });
+    if (!active.length) return null;
+    // Sort by most-recent activity
+    active.sort((a, b) => {
+      const am = Math.max(Date.parse(a.properties?.hs_lastmodifieddate || '') || 0,
+                          Date.parse(a.properties?.notes_last_contacted || '') || 0);
+      const bm = Math.max(Date.parse(b.properties?.hs_lastmodifieddate || '') || 0,
+                          Date.parse(b.properties?.notes_last_contacted || '') || 0);
+      return bm - am;
+    });
+    const top = active[0];
+    const ownerId = top.properties?.hubspot_owner_id;
+    if (!ownerId) return null;
+    return {
+      activeOwnerId: String(ownerId),
+      dealId: top.id,
+      dealCount: active.length,
+      lastActivityAt: top.properties?.hs_lastmodifieddate || top.properties?.notes_last_contacted
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ZI enrichment — mirrors leaseup-ingest.js behavior
+// ---------------------------------------------------------------------------
+
+async function fetchCompanyContactIds(companyId) {
+  try {
+    const res = await apiRequest('GET', `/crm/v4/objects/companies/${companyId}/associations/contacts?limit=500`);
+    return (res.results || []).map(r => String(r.toObjectId));
+  } catch { return []; }
+}
+
+/**
+ * Run ZI enrichment for an owner group and associate contacts to the company
+ * and every deal in the batch. Only newly-created contacts get the assigned
+ * rep as hubspot_owner_id; existing contacts are associated without owner
+ * mutation.
+ */
+async function runZiEnrichmentForOwner({ ownerName, companyId, dealIds, dealOwnerId, dryRun }) {
+  const result = {
+    ziFound: 0, created: 0, existing: 0, associated: 0, errors: []
+  };
+  let ziContacts = [];
+  try {
+    ziContacts = await zi.findRelevantContacts(ownerName, { maxResults: 20 });
+    result.ziFound = ziContacts.length;
+  } catch (e) {
+    result.errors.push(`zoominfo (${ownerName}): ${e.message}`);
+    return result;
+  }
+  if (dryRun || !companyId || !ziContacts.length) return result;
+
+  // Write contacts with dedup, associated to company + first deal
+  const firstDealId = dealIds[0] || null;
+  for (const zc of ziContacts) {
+    const email     = (zc.email || '').toLowerCase();
+    const firstname = zc.firstName || '';
+    const lastname  = zc.lastName  || '';
+    const title     = zc.jobTitle  || '';
+    const phone     = zc.phone || zc.mobilePhone || '';
+    const linkedin  = Array.isArray(zc.externalUrls)
+      ? (zc.externalUrls.find(u => /linkedin/i.test(u?.url || u)) || {}).url || ''
+      : '';
+    try {
+      let existing = email ? await findContactByEmail(email) : null;
+      if (!existing && firstname && lastname) {
+        existing = await findContactByNameAtCompany(firstname, lastname, companyId);
+      }
+      if (existing) {
+        result.existing++;
+        try { await associateContactToCompany(existing.id, companyId); } catch {}
+        if (firstDealId) { try { await associateContactToDeal(existing.id, firstDealId); } catch {} }
+        result.associated++;
+        continue;
+      }
+      const props = {
+        ...(email     ? { email }                     : {}),
+        ...(firstname ? { firstname }                 : {}),
+        ...(lastname  ? { lastname }                  : {}),
+        ...(title     ? { jobtitle: title }           : {}),
+        ...(phone     ? { phone }                     : {}),
+        ...(linkedin  ? { hs_linkedin_url: linkedin } : {}),
+        ...(dealOwnerId ? { hubspot_owner_id: String(dealOwnerId) } : {})
+      };
+      await createContact(props, { companyId, dealId: firstDealId });
+      result.created++;
+      result.associated++;
+    } catch (e) {
+      result.errors.push(`${firstname} ${lastname} (${email}): ${e.message}`);
+    }
+  }
+
+  // Fan contacts out to remaining deals in the batch
+  if (dealIds.length > 1) {
+    const contactIds = await fetchCompanyContactIds(companyId);
+    for (const dealId of dealIds.slice(1)) {
+      for (const ctid of contactIds) {
+        try { await associateContactToDeal(ctid, dealId); } catch {}
+      }
+    }
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Write-mode helpers
+// ---------------------------------------------------------------------------
+
+async function createOrUpdateCompany(resolved, proposal, ownerAssignedId) {
+  if (resolved.company) {
+    // Existing — enrich blank fields only, never touch owner or name
+    const { updates } = decideUpdate(resolved.company, proposal, COMPANY_FIELD_POLICY);
+    if (Object.keys(updates).length) {
+      await updateCompany(resolved.company.id, updates);
+    }
+    return { id: resolved.company.id, action: 'enriched' };
+  }
+  // New — create with assigned rep as owner
+  const props = {
+    ...(proposal.name    ? { name:    proposal.name }    : {}),
+    ...(proposal.domain  ? { domain:  proposal.domain }  : {}),
+    ...(proposal.address ? { address: proposal.address } : {}),
+    ...(proposal.city    ? { city:    proposal.city }    : {}),
+    ...(proposal.state   ? { state:   proposal.state }   : {}),
+    ...(proposal.zip     ? { zip:     proposal.zip }     : {}),
+    ...(proposal.phone   ? { phone:   proposal.phone }   : {}),
+    ...(ownerAssignedId  ? { hubspot_owner_id: String(ownerAssignedId) } : {})
+  };
+  const created = await createCompany(props);
+  return { id: created.id, action: 'created' };
+}
+
+async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealOwnerId, openDeals, dryRun }) {
+  const dealName = buildDealName(row, ownerName);
+  const fields   = buildDealFields(row, ownerEntity);
+  fields.dealname = dealName;
+
+  const matches = openDeals.filter(d => dealMatchesRow(d.properties?.dealname, row, ownerName));
+  if (matches.length) {
+    matches.sort((a, b) => (a.properties.hs_lastmodifieddate || '').localeCompare(b.properties.hs_lastmodifieddate || ''));
+    const winner = matches[0];
+    const archivedDupes = matches.slice(1);
+
+    // Re-read the winner with ALL the fields we might change — needed to
+    // compute mismatches for location-override notes. findOpenDealsForCompany
+    // only loads a small property set.
+    let winnerFull = winner;
+    try {
+      const read = await apiRequest('POST', '/crm/v3/objects/deals/batch/read', {
+        inputs: [{ id: String(winner.id) }],
+        properties: Object.keys(fields)
+      });
+      if (read.results?.[0]) winnerFull = read.results[0];
+    } catch {}
+
+    // Merge: overwrite CoStar fields per policy, NEVER touch owner/pipeline/stage/amount/closedate
+    const { updates, mismatch } = decideUpdate(winnerFull, fields, DEAL_FIELD_POLICY);
+    // Remove system fields from the patch on merge paths (policy=never prevents,
+    // but be explicit in case of schema drift)
+    delete updates.hubspot_owner_id;
+    delete updates.pipeline;
+    delete updates.dealstage;
+    // Dealname: update to canonical format
+    if ((winnerFull.properties?.dealname || '') !== dealName) updates.dealname = dealName;
+
+    if (!dryRun && Object.keys(updates).length) {
+      await updateDeal(winner.id, updates);
+    }
+    // Archive newer dupes
+    for (const dup of archivedDupes) {
+      if (!dryRun) { try { await archiveDeal(dup.id); } catch {} }
+    }
+
+    // Location-override note
+    const locKeys = ['property_city','property_state','property_street_address','property_zip'];
+    const locOverrides = Object.fromEntries(locKeys.filter(k => mismatch[k]).map(k => [k, mismatch[k]]));
+    if (Object.keys(locOverrides).length && !dryRun) {
+      const noteBody = `<p><strong>Property location updated per CoStar ingest ${new Date().toISOString().slice(0,10)}</strong></p>` +
+        `<ul>${Object.entries(locOverrides).map(([k,v]) => `<li>${k}: "${v.current}" → "${v.proposed}"</li>`).join('')}</ul>`;
+      try { await createNoteOnDeal(winner.id, noteBody); } catch {}
+    }
+
+    return { dealId: winner.id, action: 'merged', archivedDupes: archivedDupes.map(d => d.id), mismatch };
+  }
+
+  // Create new
+  if (dryRun) return { dealId: null, action: 'would_create' };
+
+  const payload = {
+    properties: {
+      ...fields,
+      dealname: dealName,
+      pipeline: AP_PIPELINE_ID,
+      dealstage: DEAL_STAGE_FOR_NEW,
+      hubspot_owner_id: String(dealOwnerId),
+      ...(DEAL_CATEGORY_LEASE_UP ? { deal_category: DEAL_CATEGORY_LEASE_UP } : {})
+    },
+    associations: [{
+      to: { id: String(companyId) },
+      types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: hsx.ASSOC.DEAL_TO_COMPANY }]
+    }]
+  };
+  // Strip null/empty properties to avoid HS validation errors
+  for (const k of Object.keys(payload.properties)) {
+    const v = payload.properties[k];
+    if (v == null || v === '') delete payload.properties[k];
+  }
+  const created = await apiRequest('POST', '/crm/v3/objects/deals', payload);
+  return { dealId: created.id, action: 'created' };
+}
+
+// ---------------------------------------------------------------------------
+// Primary contact (from PDF) — create if missing, associate to deal
+// ---------------------------------------------------------------------------
+
+async function handlePdfPrimaryContact({ ownerEntity, companyId, dealIds, dealOwnerId, dryRun }) {
+  const primary = ownerEntity?.contacts?.[0];
+  if (!primary?.email) return { created: false, associated: false };
+  if (dryRun) return { created: false, associated: false, dryRun: true };
+  try {
+    let contact = await findContactByEmail(primary.email);
+    if (!contact) {
+      const [firstname, ...lastParts] = (primary.name || '').split(/\s+/);
+      const props = {
+        email: primary.email.toLowerCase(),
+        ...(firstname ? { firstname } : {}),
+        ...(lastParts.length ? { lastname: lastParts.join(' ') } : {}),
+        ...(primary.title ? { jobtitle: primary.title } : {}),
+        ...(primary.phone ? { phone: primary.phone } : {}),
+        ...(dealOwnerId ? { hubspot_owner_id: String(dealOwnerId) } : {})
+      };
+      contact = await createContact(props, { companyId, dealId: dealIds[0] || null });
+      for (const dealId of dealIds.slice(1)) {
+        try { await associateContactToDeal(contact.id, dealId); } catch {}
+      }
+      return { created: true, associated: true, contactId: contact.id };
+    }
+    // Existing — associate only, never mutate
+    try { await associateContactToCompany(contact.id, companyId); } catch {}
+    for (const dealId of dealIds) {
+      try { await associateContactToDeal(contact.id, dealId); } catch {}
+    }
+    return { created: false, associated: true, contactId: contact.id };
+  } catch (e) {
+    return { created: false, associated: false, error: e.message };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Exports
 // ---------------------------------------------------------------------------
 
@@ -560,8 +894,15 @@ module.exports = {
   // Domain derivation
   cleanDomain, deriveDomainFromContactEmails, clearbitLookup, loadCuratedDomains,
 
-  // Resolution
+  // Company resolution
   searchCompanyByName, resolveCompany,
+
+  // Rep resolution
+  resolveRoeRep, findActiveEngagementRep, getHsOwnerIdByName,
+  ACTIVE_ENGAGEMENT_DAYS, DEAL_STAGE_FOR_NEW, TEST_STAGE,
+
+  // Write helpers
+  createOrUpdateCompany, createOrMergeDeal, handlePdfPrimaryContact, runZiEnrichmentForOwner,
 
   // State
   expandState,
