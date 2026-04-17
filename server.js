@@ -1734,8 +1734,25 @@ async function runPdfIngestFromFile(filePath, channel, threadTs, client, isDryRu
     text: `_PDF parsed — running ingest${isDryRun ? ' (DRY RUN)' : ''}…_`
   });
 
-  // 2. Orchestrate the ingest
-  const report = await pdfOrchestrator.runPdfIngest(ndjsonPath, { dryRun: isDryRun });
+  // 2. Orchestrate the ingest with periodic Slack progress updates.
+  //    Post every 20 owners processed (~12% increments); avoids rate-limit
+  //    churn while giving reps visibility across a 20-minute run.
+  let lastPost = 0;
+  const report = await pdfOrchestrator.runPdfIngest(ndjsonPath, {
+    dryRun: isDryRun,
+    onProgress: async ({ current, total, owner }) => {
+      if (current - lastPost >= 20 || current === total) {
+        lastPost = current;
+        const pct = Math.round((current / total) * 100);
+        try {
+          await client.chat.postMessage({
+            channel, thread_ts: threadTs,
+            text: `_Progress: ${current}/${total} owners (${pct}%) — latest: ${owner}_`
+          });
+        } catch {}
+      }
+    }
+  });
   try { fs.unlinkSync(ndjsonPath); } catch {}
 
   // 3. Post summary
