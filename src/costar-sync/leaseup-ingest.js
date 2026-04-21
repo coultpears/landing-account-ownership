@@ -383,29 +383,49 @@ async function createOrMergeLeaseUpDeal(companyId, row, conflictNote, companyBas
   const openDeals = await findOpenDealsForCompany(companyId);
   const matches   = openDeals.filter(d => dealMatchesRow(d.properties?.dealname, row));
   if (matches.length) {
-    matches.sort((a, b) =>
-      (a.properties.hs_lastmodifieddate || '').localeCompare(
-      b.properties.hs_lastmodifieddate || ''));  // oldest first
-    const winner = matches[0];
+    // Patched 2026-04-21 to match pdf-ingest.js policy:
+    //   - Never archive a deal with active engagement (60d window)
+    //   - Never change the winner's owner or category on merge
+    // Previously this path was a data-loss risk for non-Xander reps.
+    const ACTIVE_DAYS = 60;
+    const activeCutoff = Date.now() - ACTIVE_DAYS * 24 * 60 * 60 * 1000;
+    const recencyOf = d => Math.max(
+      Date.parse(d.properties?.notes_last_contacted || '') || 0,
+      Date.parse(d.properties?.hs_lastmodifieddate || '') || 0
+    );
+    const active = matches.filter(d => recencyOf(d) >= activeCutoff);
+    const stale  = matches.filter(d => recencyOf(d) <  activeCutoff);
+
+    let winner, archivedDupes = [], flaggedActive = [];
+    if (active.length >= 1) {
+      active.sort((a, b) => recencyOf(b) - recencyOf(a));
+      winner = active[0];
+      flaggedActive = active.slice(1);
+      archivedDupes = stale;
+    } else {
+      matches.sort((a, b) => (a.properties.hs_lastmodifieddate || '').localeCompare(b.properties.hs_lastmodifieddate || ''));
+      winner = matches[0];
+      archivedDupes = matches.slice(1);
+    }
+
     const updates = { ...fieldUpdates };
     if ((winner.properties?.dealname || '') !== dealName) updates.dealname = dealName;
-    if (winner.properties?.hubspot_owner_id !== String(XANDER_OWNER_ID)) {
-      updates.hubspot_owner_id = String(XANDER_OWNER_ID);
-    }
-    if (winner.properties?.deal_category !== DEAL_CATEGORY_LEASE_UP) {
-      updates.deal_category = DEAL_CATEGORY_LEASE_UP;
-    }
+    // Owner and category are NEVER changed on merge — preserves rep ownership
     if (Object.keys(updates).length) await updateDeal(winner.id, updates);
     if (conflictNote) await createNoteOnDeal(winner.id, conflictNote);
-    // Archive newer dupes
-    for (const dup of matches.slice(1)) {
+    for (const dup of archivedDupes) {
       try { await archiveDeal(dup.id); } catch {}
     }
     return {
       dealId: winner.id,
       action: 'merged',
       name:   dealName,
-      archivedDupes: matches.slice(1).map(d => d.id)
+      archivedDupes: archivedDupes.map(d => d.id),
+      flaggedActiveDupes: flaggedActive.map(d => ({
+        id: d.id, dealname: d.properties?.dealname,
+        owner: d.properties?.hubspot_owner_id,
+        lastContact: d.properties?.notes_last_contacted
+      }))
     };
   }
 

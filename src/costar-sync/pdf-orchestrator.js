@@ -293,6 +293,17 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency
         else if (dealResult.action === 'merged') report.summary.deals.merged++;
         else if (dealResult.action === 'would_create') report.summary.deals.created++;
         if (dealResult.archivedDupes?.length) report.summary.deals.dupes_archived += dealResult.archivedDupes.length;
+        // Surface independent-pursuit conflicts (active deals on same property
+        // by different reps — not archived per new policy)
+        if (dealResult.flaggedActiveDupes?.length) {
+          report.summary.deals.active_dupes_flagged = (report.summary.deals.active_dupes_flagged || 0) + dealResult.flaggedActiveDupes.length;
+          report.active_dupes_flagged = report.active_dupes_flagged || [];
+          report.active_dupes_flagged.push({
+            ownerName, property: p.property_name,
+            winningDealId: dealResult.dealId,
+            flagged: dealResult.flaggedActiveDupes
+          });
+        }
         if (dealResult.dealId) dealIds.push(dealResult.dealId);
 
         // Location-override bookkeeping

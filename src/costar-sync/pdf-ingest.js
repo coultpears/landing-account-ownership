@@ -798,9 +798,38 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
 
   const matches = openDeals.filter(d => dealMatchesRow(d.properties?.dealname, row, ownerName));
   if (matches.length) {
-    matches.sort((a, b) => (a.properties.hs_lastmodifieddate || '').localeCompare(b.properties.hs_lastmodifieddate || ''));
-    const winner = matches[0];
-    const archivedDupes = matches.slice(1);
+    // NEW POLICY (2026-04-21): never archive a deal with active engagement.
+    // Separate matches into active vs stale. "Active" = last engagement
+    // (notes_last_contacted or hs_lastmodifieddate) within 60 days.
+    //
+    // If multiple matches are active → treat them as INDEPENDENT pursuits,
+    // not dupes. Don't archive any; pick the most-recently-active as the
+    // merge winner; flag the other active deals to the summary for rep
+    // coordination.
+    //
+    // If only one is active and others are stale → keep the active one,
+    // archive the stale ones.
+    //
+    // If none are active → legacy oldest-wins, archive newer.
+    const activeCutoff = Date.now() - ACTIVE_ENGAGEMENT_DAYS * 24 * 60 * 60 * 1000;
+    const recencyOf = d => Math.max(
+      Date.parse(d.properties?.notes_last_contacted || '') || 0,
+      Date.parse(d.properties?.hs_lastmodifieddate || '') || 0
+    );
+    const active = matches.filter(d => recencyOf(d) >= activeCutoff);
+    const stale  = matches.filter(d => recencyOf(d) <  activeCutoff);
+
+    let winner, archivedDupes = [], flaggedActive = [];
+    if (active.length >= 1) {
+      active.sort((a, b) => recencyOf(b) - recencyOf(a)); // most-recent active first
+      winner = active[0];
+      flaggedActive = active.slice(1);
+      archivedDupes = stale; // only stale are safe to archive
+    } else {
+      matches.sort((a, b) => (a.properties.hs_lastmodifieddate || '').localeCompare(b.properties.hs_lastmodifieddate || ''));
+      winner = matches[0];
+      archivedDupes = matches.slice(1);
+    }
 
     // Re-read the winner with ALL the fields we might change — needed to
     // compute mismatches for location-override notes. findOpenDealsForCompany
@@ -841,7 +870,20 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
       try { await createNoteOnDeal(winner.id, noteBody); } catch {}
     }
 
-    return { dealId: winner.id, action: 'merged', archivedDupes: archivedDupes.map(d => d.id), mismatch };
+    return {
+      dealId: winner.id,
+      action: 'merged',
+      archivedDupes: archivedDupes.map(d => d.id),
+      // Active deals we REFUSED to archive — surface to the summary so reps
+      // coordinate manually (different reps working the same property).
+      flaggedActiveDupes: flaggedActive.map(d => ({
+        id: d.id,
+        dealname: d.properties?.dealname,
+        owner: d.properties?.hubspot_owner_id,
+        lastContact: d.properties?.notes_last_contacted
+      })),
+      mismatch
+    };
   }
 
   // Create new
