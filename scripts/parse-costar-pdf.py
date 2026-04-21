@@ -266,7 +266,11 @@ def parse_contacts_block(page, line_text_to_y):
     # Find sub-section y-positions within Contacts
     sub_headers = [('Recorded Owner','recorded_owner'),
                    ('True Owner','true_owners'),
-                   ('Primary Leasing Company','leasing_companies')]
+                   ('Primary Leasing Company','leasing_companies'),
+                   ('Property Manager','_ignored'),  # not ingested, but terminates True Owner block
+                   ('Property Management','_ignored'),
+                   ('Sales Company','_ignored'),
+                   ('Primary Leasing','_ignored')]
     sub_positions = []
     for h, key in sub_headers:
         # Find this header at or below contacts_y
@@ -275,9 +279,14 @@ def parse_contacts_block(page, line_text_to_y):
                 sub_positions.append((y, h, key))
                 break
 
-    # Footer y (where we should stop)
+    # Footer y — where Contacts section ends. Use first of: known footer marker,
+    # any "Property Notes" / "Amenities" / "Photos" text appearing below
+    # contacts_y (content that comes AFTER Contacts on rare layouts), or 1000.
     footer_y = line_text_to_y.get('Footer', 1000)
-    # or use last page y
+    for stopper in ('Property Notes', 'Property Photos', 'Photos', 'Map', 'Location Map', 'Unit Mix', 'Building Summary'):
+        y = line_text_to_y.get(stopper)
+        if y is not None and y > contacts_y and y < footer_y:
+            footer_y = y
     sub_positions.sort()
 
     for i, (y_hdr, header, key) in enumerate(sub_positions):
@@ -295,12 +304,41 @@ def parse_contacts_block(page, line_text_to_y):
         if entities and named:
             entities[0]['contacts'] = named
 
+        # Filter defensively: reject entities whose "name" looks like body text
+        # instead of a company name (too long, starts with obvious non-name words,
+        # contains sentence-like content). Guards against parse bleed-through
+        # from Property Manager / Property Notes sections on odd layouts.
+        entities = [e for e in entities if _looks_like_company_name(e.get('name'))]
+
+        if key == '_ignored':
+            continue  # terminator header; we only need its y-position for bounds
         if key == 'recorded_owner':
             if entities: result['recorded_owner'] = entities[0]
         else:
             result[key].extend(entities)
 
     return result
+
+def _looks_like_company_name(name):
+    """Heuristic: reject obvious non-names that sometimes slip through the
+    Contacts parser when the page layout puts adjacent sections close."""
+    if not name: return False
+    n = name.strip()
+    # Too long — real company names are rarely over 80 chars
+    if len(n) > 80: return False
+    # Starts with obvious body-text words
+    if re.match(r'^(Property Manager|Property Notes|Property Photos|Property Type|Sales Company|Market Segment|Amenities|Looking for|Photos|Unit Mix|Building Summary)\b', n, re.IGNORECASE):
+        return False
+    # Content-based rejection (catches mid-string amenity text that a name line
+    # shouldn't have): "Amenities", "Property Summary", "Stories4", "Built2022",
+    # "Units123", "Market Segment", "Parking Spaces"
+    if re.search(r'\bAmenities\b|\bProperty Summary\b|\bStories\d|\bElevators\d|\bUnits\d|\bBuilt\d{4}|\bMarket Segment\b|\bParking Spaces\b', n, re.IGNORECASE):
+        return False
+    # Sentence-like (multi-clause with commas that aren't in a typical suffix pattern)
+    # Real names may have ", Inc" / ", LLC" / ", LP" / ", Ltd" — allow those but
+    # block runs with 3+ commas (likely body text).
+    if n.count(',') >= 3: return False
+    return True
 
 _URL_LINE_RE   = re.compile(r'^(https?://|www\.|[a-z0-9.-]+\.(?:com|net|org|io|co|us|biz|info|realty|properties|capital|group|partners|re))$', re.IGNORECASE)
 _CITY_LINE_RE  = re.compile(r'^([A-Za-z][A-Za-z\s.\-\']+),\s+[A-Z]{2}\s+\d{5}(?:-\d{4})?(?:\s+USA)?\s*$')

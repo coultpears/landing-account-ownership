@@ -440,14 +440,18 @@ const DEAL_FIELD_POLICY = {
   deal_category:         'never'   // rep-controlled, legacy "Lease Up" default removed
 };
 
+// CoStar is source of truth for HQ data on matched companies. We overwrite
+// stale HS values (2022-era imports often have wrong city/state/domain).
+// Name is never touched — it's the match key and preserves manual curation.
+// Mismatches are tracked so the Slack summary surfaces what changed.
 const COMPANY_FIELD_POLICY = {
   name:    'never',
-  domain:  'blank_only',
-  address: 'blank_only',
-  city:    'blank_only',
-  state:   'blank_only',
-  zip:     'blank_only',
-  phone:   'blank_only'
+  domain:  'overwrite',
+  address: 'overwrite',
+  city:    'overwrite',
+  state:   'overwrite',
+  zip:     'overwrite',
+  phone:   'overwrite'
 };
 
 /**
