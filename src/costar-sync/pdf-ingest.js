@@ -74,6 +74,7 @@ const {
   associateContactToCompany, associateContactToDeal,
   createCompany, updateCompany, getCompanyBasics,
   updateDeal, archiveDeal, mergeDeals, createNoteOnDeal, deriveDominantDomain,
+  CLOSED_STAGES,
   PUBLIC_EMAIL_DOMAINS, AMBIGUOUS_CORPORATE_DOMAINS
 } = hsx;
 
@@ -796,7 +797,39 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
   const fields   = buildDealFields(row, ownerEntity);
   fields.dealname = dealName;
 
-  const matches = openDeals.filter(d => dealMatchesRow(d.properties?.dealname, row, ownerName));
+  // Primary dedup: deals already associated to this company
+  const companyMatches = openDeals.filter(d => dealMatchesRow(d.properties?.dealname, row, ownerName));
+
+  // Secondary dedup: ALL open AP deals at this property's street address.
+  // Catches: (a) deals with no company association, (b) deals on a different
+  // (duplicate) company record, (c) deals with inconsistent naming that hide
+  // the owner token. Street address is globally unique per building.
+  let addressMatches = [];
+  const addr = (row.property_street_address || '').trim();
+  if (addr && addr.length >= 6) {
+    try {
+      const r = await apiRequest('POST', '/crm/v3/objects/deals/search', {
+        filterGroups: [{ filters: [
+          { propertyName: 'pipeline', operator: 'EQ', value: AP_PIPELINE_ID },
+          { propertyName: 'property_street_address', operator: 'EQ', value: addr }
+        ]}],
+        properties: ['dealname','dealstage','pipeline','hubspot_owner_id',
+                     'hs_lastmodifieddate','notes_last_contacted',
+                     'property_street_address','property_name','company_name'],
+        limit: 50
+      });
+      addressMatches = (r.results || []).filter(d => {
+        if (CLOSED_STAGES.has(d.properties?.dealstage)) return false;
+        return true;
+      });
+    } catch {}
+  }
+
+  // Union by deal ID. companyMatches takes precedence (already has richer data).
+  const byId = new Map();
+  for (const d of companyMatches) byId.set(String(d.id), d);
+  for (const d of addressMatches) if (!byId.has(String(d.id))) byId.set(String(d.id), d);
+  const matches = Array.from(byId.values());
   if (matches.length) {
     // NEW POLICY (2026-04-21): never archive a deal with active engagement.
     // Separate matches into active vs stale. "Active" = last engagement
@@ -812,10 +845,17 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
     //
     // If none are active → legacy oldest-wins, archive newer.
     const activeCutoff = Date.now() - ACTIVE_ENGAGEMENT_DAYS * 24 * 60 * 60 * 1000;
-    const recencyOf = d => Math.max(
-      Date.parse(d.properties?.notes_last_contacted || '') || 0,
-      Date.parse(d.properties?.hs_lastmodifieddate || '') || 0
-    );
+    // Use notes_last_contacted as the primary active-engagement signal —
+    // it only advances on logged calls/emails/meetings (actual rep work),
+    // unlike hs_lastmodifieddate which bumps on any property write or
+    // automation. Fall back to hs_lastmodifieddate only when no contact
+    // has ever been logged (covers edge cases where rep edits the deal
+    // without logging an engagement).
+    const recencyOf = d => {
+      const contacted = Date.parse(d.properties?.notes_last_contacted || '') || 0;
+      if (contacted) return contacted;
+      return Date.parse(d.properties?.hs_lastmodifieddate || '') || 0;
+    };
     const active = matches.filter(d => recencyOf(d) >= activeCutoff);
     const stale  = matches.filter(d => recencyOf(d) <  activeCutoff);
 

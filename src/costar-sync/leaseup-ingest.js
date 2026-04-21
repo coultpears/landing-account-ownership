@@ -390,10 +390,11 @@ async function createOrMergeLeaseUpDeal(companyId, row, conflictNote, companyBas
     // Previously this path was a data-loss risk for non-Xander reps.
     const ACTIVE_DAYS = 60;
     const activeCutoff = Date.now() - ACTIVE_DAYS * 24 * 60 * 60 * 1000;
-    const recencyOf = d => Math.max(
-      Date.parse(d.properties?.notes_last_contacted || '') || 0,
-      Date.parse(d.properties?.hs_lastmodifieddate || '') || 0
-    );
+    const recencyOf = d => {
+      const contacted = Date.parse(d.properties?.notes_last_contacted || '') || 0;
+      if (contacted) return contacted;
+      return Date.parse(d.properties?.hs_lastmodifieddate || '') || 0;
+    };
     const active = matches.filter(d => recencyOf(d) >= activeCutoff);
     const stale  = matches.filter(d => recencyOf(d) <  activeCutoff);
 
