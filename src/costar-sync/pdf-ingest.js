@@ -73,7 +73,7 @@ const {
   findContactByEmail, findContactByNameAtCompany, createContact,
   associateContactToCompany, associateContactToDeal,
   createCompany, updateCompany, getCompanyBasics,
-  updateDeal, archiveDeal, createNoteOnDeal, deriveDominantDomain,
+  updateDeal, archiveDeal, mergeDeals, createNoteOnDeal, deriveDominantDomain,
   PUBLIC_EMAIL_DOMAINS, AMBIGUOUS_CORPORATE_DOMAINS
 } = hsx;
 
@@ -856,9 +856,19 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
     if (!dryRun && Object.keys(updates).length) {
       await updateDeal(winner.id, updates);
     }
-    // Archive newer dupes
+    // Merge stale dupes INTO the winner — preserves all activity (notes,
+    // emails, calls, tasks, stage history, contact associations) instead of
+    // leaving it stranded on an archived record. HubSpot's /merge endpoint
+    // transfers everything and then archives the secondary.
     for (const dup of archivedDupes) {
-      if (!dryRun) { try { await archiveDeal(dup.id); } catch {} }
+      if (!dryRun) {
+        try { await mergeDeals(winner.id, dup.id); }
+        catch (e) {
+          // Fall back to archive only if merge fails (e.g. if HS rejects
+          // due to property conflicts) so we don't leave a true dupe alive.
+          try { await archiveDeal(dup.id); } catch {}
+        }
+      }
     }
 
     // Location-override note

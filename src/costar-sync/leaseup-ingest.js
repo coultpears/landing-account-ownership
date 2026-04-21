@@ -43,6 +43,7 @@ const {
   createDeal,
   updateDeal,
   archiveDeal,
+  mergeDeals,
   createNoteOnDeal,
   deriveDominantDomain,
   findCompanyByDomain,
@@ -413,8 +414,10 @@ async function createOrMergeLeaseUpDeal(companyId, row, conflictNote, companyBas
     // Owner and category are NEVER changed on merge — preserves rep ownership
     if (Object.keys(updates).length) await updateDeal(winner.id, updates);
     if (conflictNote) await createNoteOnDeal(winner.id, conflictNote);
+    // Merge stale dupes into winner — preserves all activity
     for (const dup of archivedDupes) {
-      try { await archiveDeal(dup.id); } catch {}
+      try { await mergeDeals(winner.id, dup.id); }
+      catch { try { await archiveDeal(dup.id); } catch {} }
     }
     return {
       dealId: winner.id,

@@ -178,6 +178,22 @@ async function archiveDeal(dealId) {
   return apiRequest('DELETE', `/crm/v3/objects/deals/${dealId}`);
 }
 
+/**
+ * Merge a secondary deal into a primary. Transfers all activity (notes,
+ * emails, calls, tasks, stage history), contact/company associations, and
+ * property values from secondary → primary, then archives secondary.
+ * Primary retains its ID and ownership; secondary becomes unreachable.
+ *
+ * Use this in place of `archiveDeal` when de-duplicating so rep history
+ * doesn't get stranded on the archived record.
+ */
+async function mergeDeals(primaryId, secondaryId) {
+  return apiRequest('POST', '/crm/v3/objects/deals/merge', {
+    primaryObjectId: String(primaryId),
+    objectIdToMerge: String(secondaryId)
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Deals — search by stage + pipeline (for backfill)
 // ---------------------------------------------------------------------------
@@ -410,6 +426,7 @@ module.exports = {
   createDeal,
   updateDeal,
   archiveDeal,
+  mergeDeals,
   searchDealsByPipelineAndStage,
   getDealCompanies,
   findContactByEmail,
