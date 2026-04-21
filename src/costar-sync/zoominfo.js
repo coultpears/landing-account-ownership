@@ -259,10 +259,34 @@ function titlePriorityScore(title) {
   return 999;
 }
 
+// Strip legal suffixes that ZI's search is fussy about — "Inc", "LLC",
+// "LP", "Corp", "Ltd", "Co", etc. Many ZI queries with the suffix
+// return 0 results; same query without the suffix matches.
+const LEGAL_SUFFIX_RE = /[,.]?\s*\b(inc|llc|llp|lp|ltd|corp|corporation|company|co|group|holdings?|management|partners|pllc|realty|capital|properties|trust)\s*\.?\s*$/i;
+
+function stripLegalSuffix(name) {
+  if (!name) return name;
+  let n = String(name).trim();
+  // Iteratively strip trailing legal markers (handles "ABC, LP Inc" → "ABC")
+  for (let i = 0; i < 4; i++) {
+    const stripped = n.replace(LEGAL_SUFFIX_RE, '').trim();
+    if (stripped === n || !stripped) break;
+    n = stripped;
+  }
+  return n.replace(/[,.\s]+$/, '').trim();
+}
+
 async function findRelevantContacts(companyName, { maxResults = 20 } = {}) {
   if (!companyName) return [];
 
-  const searchResults = await searchContacts(companyName, { maxResults: 100 });
+  // Try full name first; if zero, retry with legal suffixes stripped.
+  let searchResults = await searchContacts(companyName, { maxResults: 100 });
+  if (!searchResults.length) {
+    const alt = stripLegalSuffix(companyName);
+    if (alt && alt !== companyName) {
+      searchResults = await searchContacts(alt, { maxResults: 100 });
+    }
+  }
   if (!searchResults.length) return [];
 
   // Filter: must have email or phone, and title must match target OR priority keywords.
@@ -283,8 +307,10 @@ async function findRelevantContacts(companyName, { maxResults = 20 } = {}) {
   const ids = candidates.map(c => c.id).filter(Boolean);
   const enriched = await enrichContactsById(ids);
 
-  // Filter: drop enriched records without email (outreach needs email)
-  return enriched.filter(c => c.email);
+  // Filter: drop enriched records with NEITHER email NOR phone (can't reach
+  // them at all). A phone-only contact is still useful to reps — they can
+  // call or reference on LinkedIn via externalUrls.
+  return enriched.filter(c => c.email || c.phone || c.mobilePhone);
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
