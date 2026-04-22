@@ -1702,6 +1702,31 @@ function summaryStats(s) {
 // See: src/costar-sync/pdf-orchestrator.js
 // ---------------------------------------------------------------------------
 
+// In-memory cache: HS owner ID → "First Last". Small, cheap, refreshes on
+// cold start of the Cloud Run container.
+const _ownerNameCache = {};
+async function resolveOwnerNames(ownerIds) {
+  const out = {};
+  const missing = [];
+  for (const id of ownerIds) {
+    if (!id) continue;
+    const s = String(id);
+    if (_ownerNameCache[s]) out[s] = _ownerNameCache[s];
+    else missing.push(s);
+  }
+  if (!missing.length) return out;
+  const hsx = require('./src/costar-sync/hs-extra');
+  for (const id of missing) {
+    try {
+      const o = await hsx.apiRequest('GET', `/crm/v3/owners/${id}?includeArchived=true`);
+      const name = [o.firstName, o.lastName].filter(Boolean).join(' ').trim() || o.email || `owner ${id}`;
+      _ownerNameCache[id] = name;
+      out[id] = name;
+    } catch { out[id] = `owner ${id}`; }
+  }
+  return out;
+}
+
 async function runPdfIngestFromFile(filePath, channel, threadTs, client, isDryRun) {
   const { spawn } = require('child_process');
   const os    = require('os');
@@ -1797,12 +1822,43 @@ async function runPdfIngestFromFile(filePath, channel, threadTs, client, isDryRu
 
   // 5. Active-engagement overrides (informational)
   if (report.roe_active_mismatches.length) {
+    // Resolve owner IDs to names for readable output
+    const ownerIds = [...new Set(report.roe_active_mismatches.map(m => m.activeOwnerId).filter(Boolean))];
+    const ownerNameMap = await resolveOwnerNames(ownerIds);
     const text = `*Active-engagement overrides* (ROE deferred to active rep, ${report.roe_active_mismatches.length}):\n` +
-      report.roe_active_mismatches.slice(0, 15).map(m =>
-        `  • ${m.ownerName} — ROE *${m.roeRep}*, active rep holds ${m.activeDealCount} deal(s)`
-      ).join('\n') +
+      report.roe_active_mismatches.slice(0, 15).map(m => {
+        const activeName = ownerNameMap[m.activeOwnerId] || `owner ${m.activeOwnerId}`;
+        return `  • ${m.ownerName} — ROE *${m.roeRep}*, active rep *${activeName}* holds ${m.activeDealCount} deal(s)`;
+      }).join('\n') +
       (report.roe_active_mismatches.length > 15 ? `\n_… and ${report.roe_active_mismatches.length - 15} more_` : '');
     await client.chat.postMessage({ channel, thread_ts: threadTs, text: text.slice(0, 3500) });
+  }
+
+  // 5b. Active-dupes flagged — multiple reps independently pursuing the same
+  // property on the same company. Ingest refused to merge or archive per
+  // active-engagement policy; surface HS links so reps can coordinate fast.
+  if (report.active_dupes_flagged?.length) {
+    const portalId = '20754835';
+    const dealUrl = id => `https://app.hubspot.com/contacts/${portalId}/record/0-3/${id}`;
+    // Gather owner names for anyone referenced in the flagged dupes
+    const ownerIds = new Set();
+    for (const f of report.active_dupes_flagged) for (const d of (f.flagged || [])) if (d.owner) ownerIds.add(String(d.owner));
+    const ownerNameMap = await resolveOwnerNames([...ownerIds]);
+
+    const parts = [`*⚠ Multiple active pursuits — coordinate before outreach* (${report.active_dupes_flagged.length} properties):`];
+    for (const f of report.active_dupes_flagged.slice(0, 10)) {
+      parts.push(`\n• *${f.property}* (${f.ownerName})`);
+      // Winner
+      parts.push(`   ◦ *Winning deal* (merged from ingest): <${dealUrl(f.winningDealId)}|${f.winningDealId}>`);
+      // Other active pursuits (not merged/archived)
+      for (const d of (f.flagged || [])) {
+        const name = ownerNameMap[d.owner] || `owner ${d.owner}`;
+        const last = d.lastContact?.slice(0, 10) || 'no contact log';
+        parts.push(`   ◦ *${name}* — <${dealUrl(d.id)}|${d.dealname || d.id}>  _(last contacted ${last})_`);
+      }
+    }
+    if (report.active_dupes_flagged.length > 10) parts.push(`\n_… and ${report.active_dupes_flagged.length - 10} more_`);
+    await client.chat.postMessage({ channel, thread_ts: threadTs, text: parts.join('\n').slice(0, 3800) });
   }
 
   // 6. Warnings (ZI timeouts, read errors, etc)
