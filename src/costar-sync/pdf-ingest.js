@@ -701,6 +701,8 @@ async function runZiEnrichmentForOwner({ ownerName, companyId, dealIds, dealOwne
     const linkedin  = Array.isArray(zc.externalUrls)
       ? (zc.externalUrls.find(u => /linkedin/i.test(u?.url || u)) || {}).url || ''
       : '';
+    const ziCity    = (zc.city || '').trim();
+    const ziState   = (zc.state || '').trim();
     try {
       let existing = email ? await findContactByEmail(email) : null;
       if (!existing && firstname && lastname) {
@@ -708,6 +710,16 @@ async function runZiEnrichmentForOwner({ ownerName, companyId, dealIds, dealOwne
       }
       if (existing) {
         result.existing++;
+        // Blank-only field enrichment on existing contacts (don't overwrite rep-set data)
+        const patch = {};
+        if (!existing.properties?.city && ziCity)   patch.city  = ziCity;
+        if (!existing.properties?.state && ziState) patch.state = ziState;
+        if (!existing.properties?.jobtitle && title) patch.jobtitle = title;
+        if (!existing.properties?.phone && phone)    patch.phone = phone;
+        if (!existing.properties?.hs_linkedin_url && linkedin) patch.hs_linkedin_url = linkedin;
+        if (Object.keys(patch).length) {
+          try { await apiRequest('PATCH', `/crm/v3/objects/contacts/${existing.id}`, { properties: patch }); } catch {}
+        }
         try { await associateContactToCompany(existing.id, companyId); } catch {}
         if (firstDealId) { try { await associateContactToDeal(existing.id, firstDealId); } catch {} }
         result.associated++;
@@ -720,6 +732,8 @@ async function runZiEnrichmentForOwner({ ownerName, companyId, dealIds, dealOwne
         ...(title     ? { jobtitle: title }           : {}),
         ...(phone     ? { phone }                     : {}),
         ...(linkedin  ? { hs_linkedin_url: linkedin } : {}),
+        ...(ziCity    ? { city:  ziCity  }            : {}),
+        ...(ziState   ? { state: ziState }            : {}),
         ...(dealOwnerId ? { hubspot_owner_id: String(dealOwnerId) } : {})
       };
       await createContact(props, { companyId, dealId: firstDealId });
@@ -730,17 +744,67 @@ async function runZiEnrichmentForOwner({ ownerName, companyId, dealIds, dealOwne
     }
   }
 
-  // Fan ALL company contacts out to EVERY deal in the batch. This ensures:
-  //   (a) deals get contacts even when ZI returned 0 for this owner (existing
-  //       HS contacts from manual adds / prior runs still flow to new deals)
-  //   (b) re-ingest of a previously-contactless deal backfills it
-  // Uses HubSpot batch-associations API (up to 100 pairs/request) instead of
-  // one call per pair — ~30x speedup on average owner groups.
+  // Fan company contacts out with TITLE FILTER and LOCATION-FIRST CAP.
+  //
+  //   Company: ALL target-filtered contacts get associated (no cap) — reps
+  //   can still find anyone they want by opening the company record.
+  //   Deal: filter further by location — prefer contacts whose state/city
+  //   matches the deal's property. Cap at 8 per deal. If no location-matched
+  //   contacts exist, fall back to title-priority ranking.
+  //
+  // Off-target contacts (sales, engineering, accounting, junior admin, etc.)
+  // are filtered out entirely per zi.titleMatchesTarget.
   if (companyId && dealIds.length) {
     const contactIds = await fetchCompanyContactIds(companyId);
+    // Batch-read contact fields needed for filtering
+    const contactProps = {};
+    for (let i = 0; i < contactIds.length; i += 100) {
+      const chunk = contactIds.slice(i, i + 100);
+      try {
+        const r = await apiRequest('POST', '/crm/v3/objects/contacts/batch/read', {
+          inputs: chunk.map(id => ({ id: String(id) })),
+          properties: ['jobtitle','city','state','address']
+        });
+        for (const c of (r.results || [])) contactProps[c.id] = c.properties || {};
+      } catch {}
+    }
+
+    // Filter by title — target-eligible contacts only
+    const eligibleContactIds = contactIds.filter(ctid => {
+      const title = contactProps[ctid]?.jobtitle;
+      if (!title || !title.trim()) return true;  // no title → allow
+      return zi.titleMatchesTarget(title);
+    });
+
+    // Company-level: associate ALL eligible contacts (no cap)
+    const companyPairs = eligibleContactIds.map(ctid => ({
+      from: { id: String(ctid) },
+      to:   { id: String(companyId) },
+      types: [{ associationCategory: 'HUBSPOT_DEFINED', associationTypeId: hsx.ASSOC.CONTACT_TO_COMPANY }]
+    }));
+    for (let i = 0; i < companyPairs.length; i += 100) {
+      const chunk = companyPairs.slice(i, i + 100);
+      try { await apiRequest('POST', '/crm/v4/associations/contacts/companies/batch/create', { inputs: chunk }); }
+      catch {}
+    }
+
+    // Deal-level: for each deal, select up to MAX_DEAL_CONTACTS with location preference
+    const MAX_DEAL_CONTACTS = 8;
+    const dealRows = {};  // dealId -> { property_state, property_city, ids: [] }
+    try {
+      const r = await apiRequest('POST', '/crm/v3/objects/deals/batch/read', {
+        inputs: dealIds.map(id => ({ id: String(id) })),
+        properties: ['property_state','property_city']
+      });
+      for (const d of (r.results || [])) dealRows[d.id] = d.properties || {};
+    } catch {}
+
     const pairs = [];
     for (const dealId of dealIds) {
-      for (const ctid of contactIds) {
+      const propState = (dealRows[dealId]?.property_state || '').trim().toUpperCase();
+      const propCity  = (dealRows[dealId]?.property_city  || '').trim().toLowerCase();
+      const selected = selectContactsForDeal(eligibleContactIds, contactProps, propState, propCity, MAX_DEAL_CONTACTS);
+      for (const ctid of selected) {
         pairs.push({
           from: { id: String(ctid) },
           to:   { id: String(dealId) },
@@ -750,18 +814,54 @@ async function runZiEnrichmentForOwner({ ownerName, companyId, dealIds, dealOwne
     }
     for (let i = 0; i < pairs.length; i += 100) {
       const chunk = pairs.slice(i, i + 100);
-      try {
-        await apiRequest('POST', '/crm/v4/associations/contacts/deals/batch/create', { inputs: chunk });
-      } catch (e) {
-        // Fall back to per-pair on batch failure (rare — usually validation errors on already-associated pairs)
+      try { await apiRequest('POST', '/crm/v4/associations/contacts/deals/batch/create', { inputs: chunk }); }
+      catch {
         for (const p of chunk) {
           try { await associateContactToDeal(p.from.id, p.to.id); } catch {}
         }
       }
     }
     result.fanned_out_total = pairs.length;
+    result.fan_out_filtered_by_title = contactIds.length - eligibleContactIds.length;
+    result.fan_out_capped_per_deal = MAX_DEAL_CONTACTS;
   }
   return result;
+}
+
+/**
+ * Choose up to `cap` contact IDs for a deal, preferring:
+ *   1. Same city + same state as the property
+ *   2. Same state as the property
+ *   3. No state data on contact (eligible fallback, ranked by title priority)
+ * Contacts with a DIFFERENT state than the property are excluded from the
+ * deal (they stay on the company only).
+ */
+function selectContactsForDeal(contactIds, contactProps, propState, propCity, cap) {
+  const buckets = { cityMatch: [], stateMatch: [], noLocation: [] };
+  for (const ctid of contactIds) {
+    const p = contactProps[ctid] || {};
+    const state = (p.state || '').trim().toUpperCase();
+    const city  = (p.city  || '').trim().toLowerCase();
+    if (!state) {
+      buckets.noLocation.push(ctid);
+    } else if (state === propState) {
+      if (city && city === propCity) buckets.cityMatch.push(ctid);
+      else buckets.stateMatch.push(ctid);
+    }
+    // If state set and != propState → exclude from deal entirely
+  }
+  // Rank each bucket by title priority (lower score = higher priority)
+  const rankByTitle = (ids) => ids.slice().sort((a, b) => {
+    const ta = contactProps[a]?.jobtitle || '';
+    const tb = contactProps[b]?.jobtitle || '';
+    return zi.titlePriorityScore(ta) - zi.titlePriorityScore(tb);
+  });
+  const ordered = [
+    ...rankByTitle(buckets.cityMatch),
+    ...rankByTitle(buckets.stateMatch),
+    ...rankByTitle(buckets.noLocation)
+  ];
+  return ordered.slice(0, cap);
 }
 
 // ---------------------------------------------------------------------------
@@ -970,6 +1070,11 @@ async function handlePdfPrimaryContact({ ownerEntity, companyId, dealIds, dealOw
   const primary = ownerEntity?.contacts?.[0];
   if (!primary?.email) return { created: false, associated: false };
   if (dryRun) return { created: false, associated: false, dryRun: true };
+  // PDF named contacts default to the owner's office address — CoStar
+  // doesn't give separate contact addresses for executives.
+  const ownerStreet = (ownerEntity?.street || '').trim();
+  const ownerCity   = (ownerEntity?.city   || '').trim();
+  const ownerState  = (ownerEntity?.state  || '').trim();
   try {
     let contact = await findContactByEmail(primary.email);
     if (!contact) {
@@ -980,6 +1085,9 @@ async function handlePdfPrimaryContact({ ownerEntity, companyId, dealIds, dealOw
         ...(lastParts.length ? { lastname: lastParts.join(' ') } : {}),
         ...(primary.title ? { jobtitle: primary.title } : {}),
         ...(primary.phone ? { phone: primary.phone } : {}),
+        ...(ownerStreet ? { address: ownerStreet } : {}),
+        ...(ownerCity   ? { city: ownerCity }     : {}),
+        ...(ownerState  ? { state: ownerState }   : {}),
         ...(dealOwnerId ? { hubspot_owner_id: String(dealOwnerId) } : {})
       };
       contact = await createContact(props, { companyId, dealId: dealIds[0] || null });

@@ -66,12 +66,17 @@ const PRIORITY_TITLE_KEYWORDS = [
 // if a positive keyword matched. Catches "Property Management Accountant",
 // "Development Financial Analyst", "Affordable Housing Development", etc.
 const TITLE_EXCLUDE_KEYWORDS = [
+  // Social/impact verticals unrelated to market-rate MF
   'affordable',
   'impact',
+
+  // HR / L&D roles that share "Development" with real-estate development
   'professional development',
   'learning and development', 'learning & development',
   'talent development',
   'organizational development',
+
+  // Junior / administrative — usually not decision-makers
   'accountant', 'accounting',
   'analyst',
   'assistant',
@@ -82,7 +87,11 @@ const TITLE_EXCLUDE_KEYWORDS = [
   'payroll',
   'admin',
   'marketing',
-  // Noise from multi-division firms (e.g. Macquarie) — unrelated to MF real estate
+  'controller',                     // accounting-adjacent, not owner-side
+  'project manager',                // distinct from property manager
+  'community manager',              // property-site staff, not a decision-maker
+
+  // Non-real-estate divisions at multi-division firms (Macquarie, JLL, etc.)
   'legal', 'counsel', 'attorney',
   'regulatory', 'compliance',
   'commodities',
@@ -91,7 +100,18 @@ const TITLE_EXCLUDE_KEYWORDS = [
   'human resources', ' hr ',
   'information technology', ' it ',
   'cybersecurity', 'security engineer',
-  'product manager'
+  'product manager',
+
+  // Added 2026-04-22 — categorical non-target functions
+  'sales',                          // sales manager / sales director / sales operations / account executive
+  'data engineer', 'data scientist', 'data analyst', 'data ops', 'data infra',
+  'data infrastructure', 'data science',
+  'engineer', 'engineering',        // software eng, platform eng, SRE, devops
+  'clinical', 'medical', 'pharma', 'pharmacy', 'physician', 'nurse',
+  'construction',                   // Construction Manager, VP Construction
+  'academic', 'professor', 'teacher', 'student',
+  'non-profit', 'nonprofit', 'ngo',
+  'restaurant', 'hospitality manager'  // rare but noisy when they appear
 ];
 
 // ---------------------------------------------------------------------------
