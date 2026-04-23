@@ -284,9 +284,30 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency
     for (const p of ownerProps) {
       if ((p.contacts?.true_owners || []).length > 1) report.summary.multi_owner_jv++;
       try {
+        // Per-property rep: evaluate lease-up status on THIS property.
+        // Year built 2025+ OR vacancy 25%+ → Xander (per engine Tier 2,
+        // unless owner is Top 50 → Jack wins at Tier 1).
+        const leaseUp = pdfIngest.isLeaseUpProperty(p);
+        let perPropOwnerId = finalOwnerId;
+        let perPropSource  = finalOwnerSource;
+        if (leaseUp) {
+          const leaseUpRoe = resolveRoeRep(ownerName, hqLocation, { isLeaseUp: true });
+          const leaseUpRepName = Array.isArray(leaseUpRoe.rep) ? leaseUpRoe.rep[0] : leaseUpRoe.rep;
+          if (leaseUpRepName && leaseUpRoe.rule !== 'STATE_FALLBACK') {
+            // Lease-up resolved via Tier 1 (Top 50 → Jack) or Tier 2 (→ Xander)
+            const leaseUpId = await getHsOwnerIdByName(leaseUpRepName);
+            if (leaseUpId) {
+              perPropOwnerId = leaseUpId;
+              perPropSource  = `lease_up:${leaseUpRoe.rule}`;
+              report.summary.reps.via_lease_up = (report.summary.reps.via_lease_up || 0) + 1;
+            }
+          }
+          // If lease-up fell through to STATE_FALLBACK, it means isLeaseUp
+          // made no difference — keep the company-level finalOwnerId.
+        }
         const dealResult = await createOrMergeDeal({
           row: p, ownerName, ownerEntity: entity,
-          companyId, dealOwnerId: finalOwnerId,
+          companyId, dealOwnerId: perPropOwnerId,
           openDeals, dryRun
         });
         if (dealResult.action === 'created')    report.summary.deals.created++;

@@ -597,18 +597,38 @@ async function getHsOwnerIdByName(repName) {
 }
 
 /**
+ * Classify a property row as "lease-up" per Xander's specialty rule:
+ *   year_built >= 2025  OR  vacancy >= 25%
+ * Either signal qualifies. Null/undefined means no data → not lease-up.
+ *
+ * Called per property (not per owner) — a single owner may have a mix of
+ * lease-up and stabilized properties, each routing to different reps.
+ */
+function isLeaseUpProperty(prop) {
+  const LEASE_UP_YEAR  = 2025;
+  const LEASE_UP_VAC   = 25;
+  const year = Number(prop?.costar_year_built);
+  if (Number.isFinite(year) && year >= LEASE_UP_YEAR) return true;
+  const vac = Number(prop?.vacancy_pct);
+  if (Number.isFinite(vac) && vac >= LEASE_UP_VAC) return true;
+  return false;
+}
+
+/**
  * Resolve the ROE rep name for an owner using the existing engine.resolve()
  * cascade. Returns { rep, rule, matchedOwner, explanation, warnings, conflict }.
  *
- * The caller should use this rep as the DEFAULT, then check active engagement
- * to potentially override.
+ * isLeaseUp: when true, engine Tier 2 routes to Xander Williams (unless owner
+ * is Top 50, which wins via Tier 1). Pass true when the specific PROPERTY
+ * being assigned qualifies as lease-up. Pass false to compute the company-
+ * level ROE rep (owner relationship rep).
  */
-function resolveRoeRep(ownerName, trueOwnerHqLocation) {
+function resolveRoeRep(ownerName, trueOwnerHqLocation, { isLeaseUp = false } = {}) {
   try {
     const result = engine.resolve({
       ownerName,
-      market: trueOwnerHqLocation,      // engine keys territory on the query market
-      isLeaseUp: false,                 // PDF ingest is not lease-up-only anymore
+      market: trueOwnerHqLocation,
+      isLeaseUp,
       ownerHQ: trueOwnerHqLocation
     });
     return result;
@@ -1126,6 +1146,7 @@ module.exports = {
 
   // Rep resolution
   resolveRoeRep, findActiveEngagementRep, getHsOwnerIdByName,
+  isLeaseUpProperty,
   ACTIVE_ENGAGEMENT_DAYS, DEAL_STAGE_FOR_NEW, TEST_STAGE,
 
   // Write helpers
