@@ -399,6 +399,122 @@ async function createCompany(properties) {
   return apiRequest('POST', '/crm/v3/objects/companies', { properties });
 }
 
+// ---------------------------------------------------------------------------
+// Closed-Won lookup — used by the rep cascade as the highest-priority tier
+// ---------------------------------------------------------------------------
+
+/**
+ * Return the set of all stage IDs that mark "Closed Won" across every pipeline.
+ * HubSpot's stage metadata exposes `probability` — probability == 1.0 is the
+ * canonical Closed-Won marker. Cached for the life of the process.
+ */
+let _closedWonStageIdsCache = null;
+async function getClosedWonStageIds() {
+  if (_closedWonStageIdsCache) return _closedWonStageIdsCache;
+  const ids = new Set();
+  try {
+    const res = await apiRequest('GET', '/crm/v3/pipelines/deals');
+    for (const p of res.results || []) {
+      for (const s of p.stages || []) {
+        const prob = Number(s?.metadata?.probability);
+        if (prob === 1 || prob === 1.0) ids.add(s.id);
+      }
+    }
+  } catch { /* swallow — caller treats empty set as "no Closed-Won detection" */ }
+  _closedWonStageIdsCache = ids;
+  return ids;
+}
+
+/**
+ * Returns true if the HubSpot owner is currently active (not archived/deleted).
+ * Inactive seats fall through the rep cascade so dead reps never get new deals.
+ * Cached per process — rep churn is infrequent enough that we don't refresh.
+ */
+const _ownerActiveCache = new Map();
+async function isOwnerActive(ownerId) {
+  if (!ownerId) return false;
+  const key = String(ownerId);
+  if (_ownerActiveCache.has(key)) return _ownerActiveCache.get(key);
+  try {
+    const res = await apiRequest('GET', `/crm/v3/owners/${key}`);
+    const active = !res?.archived && !!res?.id;
+    _ownerActiveCache.set(key, active);
+    return active;
+  } catch (e) {
+    // 404 → archived/deleted owner; treat as inactive
+    if (e.statusCode === 404) { _ownerActiveCache.set(key, false); return false; }
+    // Other errors: don't cache, default to active so we don't lock out
+    // the cascade if the owners endpoint flaps
+    return true;
+  }
+}
+
+/**
+ * Find the rep who owns a company by virtue of having a Closed-Won deal on it.
+ *
+ * Policy (Matt, 2026-04-27):
+ *   • Any pipeline counts (probability == 1.0 stage metadata)
+ *   • Multi-winner tiebreak → most recent `closedate`
+ *   • If the most-recent winner's owner is inactive → fall through (return null
+ *     so the cascade tries ownerAssignments → Top-50 → Lease-Up → territory)
+ *
+ * Returns { ownerId, closeDate, dealId, dealname } or null.
+ */
+async function findClosedWonOwnerForCompany(companyId) {
+  const closedWonStages = await getClosedWonStageIds();
+  if (!closedWonStages.size) return null;
+
+  // Companies with lots of deals (Bell Partners, Greystar, Camden) blow past
+  // a single page. Paginate associations + chunk the batch/read at 100 inputs.
+  const dealIds = [];
+  let after;
+  do {
+    const url = `/crm/v4/objects/companies/${companyId}/associations/deals?limit=500` +
+                (after ? `&after=${encodeURIComponent(after)}` : '');
+    const page = await apiRequest('GET', url);
+    for (const r of page.results || []) if (r.toObjectId) dealIds.push(r.toObjectId);
+    after = page.paging?.next?.after;
+  } while (after);
+  if (!dealIds.length) return null;
+
+  const wonDeals = [];
+  for (let i = 0; i < dealIds.length; i += 100) {
+    const chunk = dealIds.slice(i, i + 100);
+    const res = await apiRequest('POST', '/crm/v3/objects/deals/batch/read', {
+      inputs: chunk.map(id => ({ id: String(id) })),
+      properties: ['dealname', 'dealstage', 'pipeline',
+                   'hubspot_owner_id', 'closedate', 'hs_closed_won_date']
+    });
+    for (const d of res.results || []) {
+      if (closedWonStages.has(d.properties?.dealstage) && d.properties?.hubspot_owner_id) {
+        wonDeals.push(d);
+      }
+    }
+  }
+
+  if (!wonDeals.length) return null;
+
+  // Sort by close date desc — most recent winner first
+  const closeOf = d => Date.parse(d.properties?.closedate ||
+                                  d.properties?.hs_closed_won_date || '') || 0;
+  wonDeals.sort((a, b) => closeOf(b) - closeOf(a));
+
+  // Walk from most-recent down; return the first deal whose owner is still active.
+  // If none of them is active, return null (cascade falls through).
+  for (const d of wonDeals) {
+    const ownerId = d.properties.hubspot_owner_id;
+    if (await isOwnerActive(ownerId)) {
+      return {
+        ownerId,
+        closeDate: d.properties.closedate || d.properties.hs_closed_won_date || null,
+        dealId: d.id,
+        dealname: d.properties.dealname || null
+      };
+    }
+  }
+  return null;
+}
+
 async function createNoteOnDeal(dealId, body) {
   return apiRequest('POST', '/crm/v3/objects/notes', {
     properties: {
@@ -435,6 +551,9 @@ module.exports = {
   associateContactToCompany,
   associateContactToDeal,
   createNoteOnDeal,
+  getClosedWonStageIds,
+  isOwnerActive,
+  findClosedWonOwnerForCompany,
   deriveDominantDomain,
   findCompanyByDomain,
   getCompanyBasics,

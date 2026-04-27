@@ -38,9 +38,16 @@
  *     - candidateHasExtraTokens: candidate with business padding words the
  *       query doesn't have ("Healthcare", "Care", "Ventures") is rejected
  *
- *   Deal dedup:
- *     - dealMatchesRow: property-name token + owner-token, format-agnostic
- *     - Oldest matching open deal wins; newer dupes archived
+ *   Deal dedup (three-pass, cumulative):
+ *     1. Company-scoped: open deals on the resolved company record
+ *     2. Address-scoped: open AP deals matching property_street_address
+ *     3. Cross-company name-scoped: open AP deals where property_name shares
+ *        a distinctive token AND property_state matches (catches legacy
+ *        deals attached to wrong/shell companies with no street populated)
+ *     - dealMatchesRow: property-name token must appear in candidate dealname.
+ *       Owner-token check removed 2026-04-27 (false negatives on legacy
+ *       dealnames; scope filters above already prevent false positives).
+ *     - Oldest matching open deal wins; newer dupes merged into winner.
  *     - Property location fields (city/state/zip/street) OVERWRITE existing
  *       values — CoStar is source of truth. Overrides trigger a deal note.
  *
@@ -73,7 +80,7 @@ const {
   findContactByEmail, findContactByNameAtCompany, createContact,
   associateContactToCompany, associateContactToDeal,
   createCompany, updateCompany, getCompanyBasics,
-  updateDeal, archiveDeal, mergeDeals, createNoteOnDeal, deriveDominantDomain,
+  updateDeal, mergeDeals, createNoteOnDeal, deriveDominantDomain,
   CLOSED_STAGES,
   PUBLIC_EMAIL_DOMAINS, AMBIGUOUS_CORPORATE_DOMAINS
 } = hsx;
@@ -121,14 +128,42 @@ function normPropToken(s) {
 }
 
 function dealMatchesRow(existingDealName, prop, ownerName) {
+  // Owner-token check intentionally removed (2026-04-27). Callers always
+  // scope the candidate set first — by company (findOpenDealsForCompany),
+  // by street address, or by property_name + state — so requiring an owner
+  // token in the dealname produced false negatives on legacy deals whose
+  // names lacked the owner (e.g. "Tampa - Richland Communities / The Gray
+  // Noho" attached to the wrong company shell). The property-name token is
+  // the durable signal; scope is what prevents cross-property collisions.
   const existing = normPropToken(existingDealName);
   if (!existing) return false;
-  const propToken  = normPropToken(prop.property_name || prop.property_street_address);
-  const ownerToken = normPropToken((ownerName || '').split(/\s+/).slice(0, 2).join(' '));
+  const propToken = normPropToken(prop.property_name || prop.property_street_address);
   if (!propToken || propToken.length < 5) return false;
   if (!existing.includes(propToken)) return false;
-  if (ownerToken && ownerToken.length >= 4 && !existing.includes(ownerToken)) return false;
   return true;
+}
+
+// Tokens we don't want to use as the distinctive search term — too common
+// across multifamily property names to be useful as a dedup signal alone.
+const PROPERTY_NAME_STOPWORDS = new Set([
+  'the','at','of','and','by','a','an','on','in','de','la','el',
+  'apartments','apartment','residences','residence','residential',
+  'tower','towers','place','park','plaza','village','villas','villa',
+  'lofts','loft','heights','house','homes','home','estates','estate',
+  'square','pointe','point','manor','court','centre','center','suites',
+  'building','buildings','property','properties','flats','commons',
+  'gardens','garden','crossing','landing','run','ridge','hill','hills',
+  'creek','grove','vista','view','views','meadows','meadow','springs','spring'
+]);
+
+/** Return up to 2 longest distinctive tokens from a property name. */
+function pickDistinctiveTokens(name) {
+  const toks = String(name || '')
+    .toLowerCase()
+    .replace(/[.,'"()&\/\-]/g, ' ')
+    .split(/\s+/)
+    .filter(t => t.length >= 3 && !PROPERTY_NAME_STOPWORDS.has(t) && !/^\d+$/.test(t));
+  return toks.sort((a, b) => b.length - a.length).slice(0, 2);
 }
 
 // Lenient: any 3+ char token shared between query and candidate.
@@ -920,6 +955,12 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
   // Primary dedup: deals already associated to this company
   const companyMatches = openDeals.filter(d => dealMatchesRow(d.properties?.dealname, row, ownerName));
 
+  // Cross-company dedup props (re-used by both passes below)
+  const CROSS_PROPS = ['dealname','dealstage','pipeline','hubspot_owner_id',
+                       'hs_lastmodifieddate','notes_last_contacted',
+                       'property_street_address','property_name','property_city',
+                       'property_state','company_name'];
+
   // Secondary dedup: ALL open AP deals at this property's street address.
   // Catches: (a) deals with no company association, (b) deals on a different
   // (duplicate) company record, (c) deals with inconsistent naming that hide
@@ -933,9 +974,7 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
           { propertyName: 'pipeline', operator: 'EQ', value: AP_PIPELINE_ID },
           { propertyName: 'property_street_address', operator: 'EQ', value: addr }
         ]}],
-        properties: ['dealname','dealstage','pipeline','hubspot_owner_id',
-                     'hs_lastmodifieddate','notes_last_contacted',
-                     'property_street_address','property_name','company_name'],
+        properties: CROSS_PROPS,
         limit: 50
       });
       addressMatches = (r.results || []).filter(d => {
@@ -945,10 +984,54 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
     } catch {}
   }
 
-  // Union by deal ID. companyMatches takes precedence (already has richer data).
+  // Tertiary dedup: cross-company match by property_name token + state.
+  // Catches legacy deals where street address was never populated (the
+  // 2024 Gray Noho case — same property attached to a wrong shell company,
+  // no street, address-search blind to it). Filtered through dealMatchesRow
+  // so a token like "Park" or "Plaza" can't accidentally merge unrelated
+  // properties — propToken from the canonical name must appear in the
+  // candidate dealname.
+  let propertyNameMatches = [];
+  const propName = (row.property_name || '').trim();
+  const stateCode = (row.property_state || '').trim().toUpperCase();
+  const distinctiveTokens = pickDistinctiveTokens(propName);
+  if (propName.length >= 5 && stateCode && distinctiveTokens.length) {
+    for (const token of distinctiveTokens) {
+      try {
+        const r = await apiRequest('POST', '/crm/v3/objects/deals/search', {
+          filterGroups: [{ filters: [
+            { propertyName: 'pipeline', operator: 'EQ', value: AP_PIPELINE_ID },
+            { propertyName: 'property_name', operator: 'CONTAINS_TOKEN', value: token },
+            { propertyName: 'property_state', operator: 'EQ', value: stateCode }
+          ]}],
+          properties: CROSS_PROPS,
+          limit: 50
+        });
+        for (const d of r.results || []) {
+          if (CLOSED_STAGES.has(d.properties?.dealstage)) continue;
+          // Re-apply dealMatchesRow: propToken from full canonical name must
+          // appear in the candidate's dealname. Token search alone is too
+          // permissive (e.g. token "Pearl" matches "Pearl Heights" and
+          // "The Pearl" — only the latter is the same property as ours).
+          if (!dealMatchesRow(d.properties?.dealname, row, ownerName)) {
+            // Also accept if the candidate's property_name itself matches
+            // — guards against deals whose dealname uses an alias but
+            // whose property_name field is canonical.
+            if (!dealMatchesRow(d.properties?.property_name, row, ownerName)) continue;
+          }
+          propertyNameMatches.push(d);
+        }
+        if (propertyNameMatches.length) break; // first hit token is enough
+      } catch {}
+    }
+  }
+
+  // Union by deal ID. companyMatches takes precedence (richest data),
+  // then addressMatches, then propertyNameMatches.
   const byId = new Map();
   for (const d of companyMatches) byId.set(String(d.id), d);
   for (const d of addressMatches) if (!byId.has(String(d.id))) byId.set(String(d.id), d);
+  for (const d of propertyNameMatches) if (!byId.has(String(d.id))) byId.set(String(d.id), d);
   const matches = Array.from(byId.values());
   if (matches.length) {
     // NEW POLICY (2026-04-21): never archive a deal with active engagement.
@@ -979,16 +1062,16 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
     const active = matches.filter(d => recencyOf(d) >= activeCutoff);
     const stale  = matches.filter(d => recencyOf(d) <  activeCutoff);
 
-    let winner, archivedDupes = [], flaggedActive = [];
+    let winner, dupesToMerge = [], flaggedActive = [];
     if (active.length >= 1) {
       active.sort((a, b) => recencyOf(b) - recencyOf(a)); // most-recent active first
       winner = active[0];
       flaggedActive = active.slice(1);
-      archivedDupes = stale; // only stale are safe to archive
+      dupesToMerge = stale; // only stale are safe to merge
     } else {
       matches.sort((a, b) => (a.properties.hs_lastmodifieddate || '').localeCompare(b.properties.hs_lastmodifieddate || ''));
       winner = matches[0];
-      archivedDupes = matches.slice(1);
+      dupesToMerge = matches.slice(1);
     }
 
     // Re-read the winner with ALL the fields we might change — needed to
@@ -1020,14 +1103,40 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
     // emails, calls, tasks, stage history, contact associations) instead of
     // leaving it stranded on an archived record. HubSpot's /merge endpoint
     // transfers everything and then archives the secondary.
-    for (const dup of archivedDupes) {
-      if (!dryRun) {
-        try { await mergeDeals(winner.id, dup.id); }
-        catch (e) {
-          // Fall back to archive only if merge fails (e.g. if HS rejects
-          // due to property conflicts) so we don't leave a true dupe alive.
-          try { await archiveDeal(dup.id); } catch {}
+    //
+    // POLICY (Matt, 2026-04-27): NEVER archive a dupe. If merge fails, leave
+    // the loser alive but visibly flagged: append " (duplicate)" to its
+    // dealname (idempotent) and re-associate it to the winner's company so
+    // it's findable in the right place. Surface to the Slack summary so a
+    // human can resolve it manually.
+    const mergedDupeIds = [];
+    const mergeFailures = []; // { id, dealname, error }
+    for (const dup of dupesToMerge) {
+      if (dryRun) { mergedDupeIds.push(dup.id); continue; }
+      try {
+        await mergeDeals(winner.id, dup.id);
+        mergedDupeIds.push(dup.id);
+      } catch (e) {
+        // Tag the loser as (duplicate) — idempotent
+        const currentName = dup.properties?.dealname || '';
+        const taggedName = / \(duplicate\)\s*$/i.test(currentName)
+          ? currentName
+          : `${currentName} (duplicate)`.trim();
+        try {
+          if (taggedName !== currentName) await updateDeal(dup.id, { dealname: taggedName });
+        } catch {}
+        // Re-associate loser to winner's company. Winner's primary company is
+        // available on the read object; if not, skip (rare).
+        const winnerCompanyId = winnerFull?.associations?.companies?.results?.[0]?.id ||
+                                winner?.associations?.companies?.results?.[0]?.id ||
+                                String(companyId);
+        if (winnerCompanyId) {
+          try {
+            await apiRequest('PUT',
+              `/crm/v3/objects/deals/${dup.id}/associations/companies/${winnerCompanyId}/deal_to_company`);
+          } catch {}
         }
+        mergeFailures.push({ id: dup.id, dealname: taggedName, error: e.message });
       }
     }
 
@@ -1043,7 +1152,8 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
     return {
       dealId: winner.id,
       action: 'merged',
-      archivedDupes: archivedDupes.map(d => d.id),
+      mergedDupes: mergedDupeIds,
+      mergeFailures,
       // Active deals we REFUSED to archive — surface to the summary so reps
       // coordinate manually (different reps working the same property).
       flaggedActiveDupes: flaggedActive.map(d => ({
@@ -1133,7 +1243,7 @@ async function handlePdfPrimaryContact({ ownerEntity, companyId, dealIds, dealOw
 
 module.exports = {
   // Classification & filters
-  normName, nameScore, normPropToken, dealMatchesRow,
+  normName, nameScore, normPropToken, dealMatchesRow, pickDistinctiveTokens,
   sharesOwnerToken, allQueryTokensInCandidate, candidateHasExtraTokens,
   HOA_TRUST_PATTERNS, CORPORATE_SUFFIX_RE, isIndividualName, shouldSkipOwner,
   getPrimaryOwnerEntity,

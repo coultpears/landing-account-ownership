@@ -57,7 +57,8 @@ function pickSpecialist(hqLocation) {
 }
 
 const {
-  apiRequest, findOpenDealsForCompany, findContactByEmail
+  apiRequest, findOpenDealsForCompany, findContactByEmail,
+  findClosedWonOwnerForCompany
 } = hsx;
 
 const {
@@ -92,7 +93,9 @@ async function runWithConcurrency(items, limit, worker) {
 }
 
 async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency = 3 } = {}) {
-  const lines = fs.readFileSync(ndjsonPath, 'utf8').split('\n').filter(Boolean);
+  // Trim each line — handles CRLF / lone-\r lines that would otherwise
+  // survive .filter(Boolean) and crash JSON.parse on Windows-emitted files.
+  const lines = fs.readFileSync(ndjsonPath, 'utf8').split('\n').map(l => l.trim()).filter(Boolean);
   const props = lines.map(l => JSON.parse(l));
 
   // Pre-filter: no owner at all → skip
@@ -134,11 +137,11 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency
         tier4_create_with_domain: 0, tier4_skipped_no_domain: 0,
         enriched: 0, created: 0
       },
-      deals: { created: 0, merged: 0, dupes_archived: 0,
+      deals: { created: 0, merged: 0, dupes_merged: 0, merge_failures: 0,
                location_overrides: 0, skipped_no_domain: 0, skipped_no_rep: 0 },
       contacts: { pdf_primary_created: 0, pdf_primary_associated: 0,
                   zi_found: 0, zi_created: 0, zi_associated: 0 },
-      reps: { via_roe: 0, via_active_engagement: 0, via_territory: 0, no_rep_flagged: 0 },
+      reps: { via_closed_won: 0, via_roe: 0, via_active_engagement: 0, via_territory: 0, via_lease_up: 0, no_rep_flagged: 0 },
       recorded_owner_fallbacks: fallbackCount,
       skipped_hoa_trust_individual: filteredHOA.length,
       skipped_no_domain_owners: 0,
@@ -188,7 +191,20 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency
       return;
     }
 
-    // 2) Resolve ROE rep
+    // 2) Closed-Won override (HIGHEST priority — Matt 2026-04-27).
+    // If the resolved company has any Closed-Won deal (any pipeline), the rep
+    // who owns the most-recent active-owner Closed-Won deal owns the company
+    // forever. Skips ROE, Top-50, Lease-Up, and active-engagement.
+    let closedWonOverride = null;
+    if (resolved.company?.id) {
+      try {
+        closedWonOverride = await findClosedWonOwnerForCompany(resolved.company.id);
+      } catch (e) {
+        report.warnings.push(`Closed-Won lookup failed for ${ownerName}: ${e.message}`);
+      }
+    }
+
+    // 3) Resolve ROE rep (ownerAssignments → Top-50 → territory)
     const hqLocation = [entity?.city, entity?.state].filter(Boolean).join(', ');
     const roe = resolveRoeRep(ownerName, hqLocation);
 
@@ -218,8 +234,8 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency
       repName = roe.rep;
     }
 
-    // HARD RULE: no rep resolvable → skip whole group
-    if (!repName) {
+    // HARD RULE: no rep resolvable AND no Closed-Won override → skip whole group
+    if (!repName && !closedWonOverride) {
       report.skipped_no_rep_owners.push({
         ownerName, hqLocation, properties_in_batch: ownerProps.length,
         warnings: roe.warnings || [`engine.resolve() returned no rep (rule: ${roe.rule || 'none'})`]
@@ -228,36 +244,56 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency
       report.summary.reps.no_rep_flagged++;
       return;
     }
-    // Translate rep name → HS owner ID
-    const roeOwnerId = await getHsOwnerIdByName(repName);
-    if (!roeOwnerId) {
-      report.skipped_no_rep_owners.push({ ownerName, hqLocation, properties_in_batch: ownerProps.length,
-        warnings: [`ROE rep "${repName}" not found in HubSpot owners`] });
-      report.summary.deals.skipped_no_rep += ownerProps.length;
-      report.summary.reps.no_rep_flagged++;
-      return;
+    // Translate rep name → HS owner ID (only when ROE actually returned a name)
+    let roeOwnerId = null;
+    if (repName) {
+      roeOwnerId = await getHsOwnerIdByName(repName);
+      if (!roeOwnerId && !closedWonOverride) {
+        report.skipped_no_rep_owners.push({ ownerName, hqLocation, properties_in_batch: ownerProps.length,
+          warnings: [`ROE rep "${repName}" not found in HubSpot owners`] });
+        report.summary.deals.skipped_no_rep += ownerProps.length;
+        report.summary.reps.no_rep_flagged++;
+        return;
+      }
     }
     if (roe.rule === 'TOP_50' || roe.rule === 'OWNER_ASSIGNMENT') report.summary.reps.via_roe++;
     else if (/state/i.test(roe.rule || '')) report.summary.reps.via_territory++;
 
-    // 3) Active-engagement override
-    let finalOwnerId = roeOwnerId;
-    let finalOwnerSource = roe.rule || 'territory';
-    let activeOverride = null;
-    if (resolved.company) {
-      activeOverride = await findActiveEngagementRep(resolved.company.id);
-      if (activeOverride && activeOverride.activeOwnerId !== roeOwnerId) {
-        finalOwnerId = activeOverride.activeOwnerId;
-        finalOwnerSource = 'active_engagement';
-        report.summary.reps.via_active_engagement++;
-        report.roe_active_mismatches.push({
-          ownerName,
-          roeRep: repName, roeOwnerId,
-          activeOwnerId: activeOverride.activeOwnerId,
-          activeDealCount: activeOverride.dealCount,
-          lastActivityAt: activeOverride.lastActivityAt,
-          note: `ROE says ${repName}; ${activeOverride.dealCount} open deal(s) actively engaged within ${ACTIVE_ENGAGEMENT_DAYS}d — new deals go to active rep.`
-        });
+    // 4) Pick final owner — Closed-Won wins outright, otherwise ROE then
+    //    active-engagement fallback (within 60d).
+    let finalOwnerId, finalOwnerSource, activeOverride = null;
+    if (closedWonOverride) {
+      finalOwnerId = closedWonOverride.ownerId;
+      finalOwnerSource = 'closed_won';
+      report.summary.reps.via_closed_won = (report.summary.reps.via_closed_won || 0) + 1;
+      report.closed_won_overrides = report.closed_won_overrides || [];
+      report.closed_won_overrides.push({
+        ownerName,
+        roeRep: repName, roeOwnerId,
+        closedWonOwnerId: closedWonOverride.ownerId,
+        closedWonDealId: closedWonOverride.dealId,
+        closedWonDealname: closedWonOverride.dealname,
+        closeDate: closedWonOverride.closeDate,
+        note: `ROE says ${repName}; company has a Closed-Won deal (${closedWonOverride.dealId}) — Closed-Won rep owns it.`
+      });
+    } else {
+      finalOwnerId = roeOwnerId;
+      finalOwnerSource = roe.rule || 'territory';
+      if (resolved.company) {
+        activeOverride = await findActiveEngagementRep(resolved.company.id);
+        if (activeOverride && activeOverride.activeOwnerId !== roeOwnerId) {
+          finalOwnerId = activeOverride.activeOwnerId;
+          finalOwnerSource = 'active_engagement';
+          report.summary.reps.via_active_engagement++;
+          report.roe_active_mismatches.push({
+            ownerName,
+            roeRep: repName, roeOwnerId,
+            activeOwnerId: activeOverride.activeOwnerId,
+            activeDealCount: activeOverride.dealCount,
+            lastActivityAt: activeOverride.lastActivityAt,
+            note: `ROE says ${repName}; ${activeOverride.dealCount} open deal(s) actively engaged within ${ACTIVE_ENGAGEMENT_DAYS}d — new deals go to active rep.`
+          });
+        }
       }
     }
 
@@ -287,10 +323,12 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency
         // Per-property rep: evaluate lease-up status on THIS property.
         // Year built 2025+ OR vacancy 25%+ → Xander (per engine Tier 2,
         // unless owner is Top 50 → Jack wins at Tier 1).
+        // Closed-Won override beats lease-up too — if a rep has already
+        // closed a deal on this company, every new property routes to them.
         const leaseUp = pdfIngest.isLeaseUpProperty(p);
         let perPropOwnerId = finalOwnerId;
         let perPropSource  = finalOwnerSource;
-        if (leaseUp) {
+        if (leaseUp && !closedWonOverride) {
           const leaseUpRoe = resolveRoeRep(ownerName, hqLocation, { isLeaseUp: true });
           const leaseUpRepName = Array.isArray(leaseUpRoe.rep) ? leaseUpRoe.rep[0] : leaseUpRoe.rep;
           if (leaseUpRepName && leaseUpRoe.rule !== 'STATE_FALLBACK') {
@@ -313,7 +351,18 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency
         if (dealResult.action === 'created')    report.summary.deals.created++;
         else if (dealResult.action === 'merged') report.summary.deals.merged++;
         else if (dealResult.action === 'would_create') report.summary.deals.created++;
-        if (dealResult.archivedDupes?.length) report.summary.deals.dupes_archived += dealResult.archivedDupes.length;
+        if (dealResult.mergedDupes?.length) report.summary.deals.dupes_merged += dealResult.mergedDupes.length;
+        if (dealResult.mergeFailures?.length) {
+          report.summary.deals.merge_failures += dealResult.mergeFailures.length;
+          report.merge_failures = report.merge_failures || [];
+          for (const f of dealResult.mergeFailures) {
+            report.merge_failures.push({
+              ownerName, property: p.property_name,
+              winningDealId: dealResult.dealId,
+              loserDealId: f.id, taggedDealname: f.dealname, error: f.error
+            });
+          }
+        }
         // Surface independent-pursuit conflicts (active deals on same property
         // by different reps — not archived per new policy)
         if (dealResult.flaggedActiveDupes?.length) {
@@ -354,7 +403,8 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency
         perProp.push({
           property_index: p.property_index, property_name: p.property_name,
           action: dealResult.action, dealId: dealResult.dealId,
-          archivedDupes: dealResult.archivedDupes || []
+          mergedDupes: dealResult.mergedDupes || [],
+          mergeFailures: dealResult.mergeFailures || []
         });
       } catch (e) {
         report.warnings.push(`deal create/merge failed for ${p.property_name} (owner ${ownerName}): ${e.message}`);
