@@ -417,6 +417,7 @@ async function _fetchPipelineData() {
 }
 
 module.exports = {
+  apiRequest,
   getOwners,
   getPortalId,
   getDealsByOwner,
