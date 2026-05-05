@@ -737,7 +737,11 @@ async function runZiEnrichmentForOwner({ ownerName, companyId, dealIds, dealOwne
   };
   let ziContacts = [];
   try {
-    ziContacts = await zi.findRelevantContacts(ownerName, { maxResults: 20 });
+    // maxResults: 5 — we ingest the top 5 by priority+accuracy (post-filter).
+    // Per-deal cap below is 3; the extra 2 are buffer for the company-level
+    // fan-out (so reps can still find a few more decision-makers on the
+    // company record beyond what's pinned to a single deal).
+    ziContacts = await zi.findRelevantContacts(ownerName, { maxResults: 5 });
     result.ziFound = ziContacts.length;
   } catch (e) {
     result.errors.push(`zoominfo (${ownerName}): ${e.message}`);
@@ -843,8 +847,11 @@ async function runZiEnrichmentForOwner({ ownerName, companyId, dealIds, dealOwne
       catch {}
     }
 
-    // Deal-level: for each deal, select up to MAX_DEAL_CONTACTS with location preference
-    const MAX_DEAL_CONTACTS = 8;
+    // Deal-level: for each deal, select up to MAX_DEAL_CONTACTS with location preference.
+    // Reduced 8 → 3 (Matt, 2026-05-04). Reps wanted only the top decision-makers
+    // pinned to a deal, not a rolodex. Company-level still fans out all eligible
+    // contacts so reps can find more if needed by opening the company record.
+    const MAX_DEAL_CONTACTS = 3;
     const dealRows = {};  // dealId -> { property_state, property_city, ids: [] }
     try {
       const r = await apiRequest('POST', '/crm/v3/objects/deals/batch/read', {
@@ -979,7 +986,19 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
       });
       addressMatches = (r.results || []).filter(d => {
         if (CLOSED_STAGES.has(d.properties?.dealstage)) return false;
-        return true;
+        // Same street can host multiple buildings (the VIV / Ascent St. Petersburg
+        // collision on "1st Ave N", 2026-04-24). Without a building number,
+        // street EQ alone is too loose. Require property-name agreement before
+        // accepting an address candidate as a true dupe:
+        //   • exact (case-insensitive) property_name match, OR
+        //   • dealMatchesRow on the candidate's dealname, OR
+        //   • dealMatchesRow on the candidate's property_name field
+        const rowName  = (row.property_name || '').toLowerCase().trim();
+        const candName = (d.properties?.property_name || '').toLowerCase().trim();
+        if (rowName && candName && rowName === candName) return true;
+        if (dealMatchesRow(d.properties?.dealname, row, ownerName)) return true;
+        if (dealMatchesRow(d.properties?.property_name, row, ownerName)) return true;
+        return false;
       });
     } catch {}
   }

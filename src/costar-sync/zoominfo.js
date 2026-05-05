@@ -50,6 +50,11 @@ const TARGET_TITLE_KEYWORDS = [
 // TARGET_TITLE_KEYWORDS is fine (a match in EITHER list qualifies the contact;
 // priority only affects ordering within qualified contacts).
 // Order matters — index is the priority rank.
+//
+// 'regional' removed 2026-05-04 — at multifamily owner-operators it pulled in
+// Regional Manager / Regional Service Manager (property-level ops staff, not
+// outreach targets). Real decision-makers like Regional VP of Asset Management
+// still pass via TARGET 'asset management' / 'vp ' and rank highly via 'asset'.
 const PRIORITY_TITLE_KEYWORDS = [
   'asset',
   'revenue',
@@ -58,8 +63,7 @@ const PRIORITY_TITLE_KEYWORDS = [
   'financial',
   'strategy',
   'strategic',
-  'development',
-  'regional'
+  'development'
 ];
 
 // Exclusion list — if any of these appear in the title, drop the contact even
@@ -111,7 +115,22 @@ const TITLE_EXCLUDE_KEYWORDS = [
   'construction',                   // Construction Manager, VP Construction
   'academic', 'professor', 'teacher', 'student',
   'non-profit', 'nonprofit', 'ngo',
-  'restaurant', 'hospitality manager'  // rare but noisy when they appear
+  'restaurant', 'hospitality manager',  // rare but noisy when they appear
+
+  // Added 2026-05-04 — property-level operations roles. At multifamily
+  // owner-operators these are field/site staff, not corporate decision-makers.
+  // Senior versions (Director/VP of Property Management, VP Leasing, Head of
+  // Asset Management) still pass via their senior modifiers in TARGET; these
+  // EXCLUDE substrings only catch the bare junior titles.
+  'leasing professional',
+  'leasing agent',
+  'leasing consultant',
+  'leasing specialist',
+  'leasing associate',
+  'leasing manager',                // building-level, distinct from Director/VP of Leasing
+  'service manager',                // catches "Regional Service Manager" too
+  'maintenance',
+  'property manager'                // junior on-site role; "VP/Director of Property Management" still passes
 ];
 
 // ---------------------------------------------------------------------------
