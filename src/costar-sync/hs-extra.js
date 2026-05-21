@@ -371,24 +371,79 @@ async function getCompanyBasics(companyId) {
   return apiRequest('GET', `/crm/v3/objects/companies/${companyId}?properties=name,domain,city,state,address,address2,zip,country`);
 }
 
+// Fetch every deal ID associated to a company, paginating fully. Big owners
+// (Greystar, Bell Partners, Camden) blow past a single page — a non-paginated
+// limit=100 silently dropped deals and was a root cause of dedup misses.
+async function _allDealIdsForCompany(companyId) {
+  const ids = [];
+  let after;
+  do {
+    const url = `/crm/v4/objects/companies/${companyId}/associations/deals?limit=500` +
+                (after ? `&after=${encodeURIComponent(after)}` : '');
+    const page = await apiRequest('GET', url);
+    for (const r of page.results || []) if (r.toObjectId) ids.push(r.toObjectId);
+    after = page.paging?.next?.after;
+  } while (after);
+  return ids;
+}
+
+async function _batchReadDeals(dealIds, properties) {
+  const out = [];
+  for (let i = 0; i < dealIds.length; i += 100) {
+    const res = await apiRequest('POST', '/crm/v3/objects/deals/batch/read', {
+      inputs:     dealIds.slice(i, i + 100).map(id => ({ id: String(id) })),
+      properties
+    });
+    out.push(...(res.results || []));
+  }
+  return out;
+}
+
 // Return ALL open AP deals on a company (most-recent first), not just the top one.
 async function findOpenDealsForCompany(companyId) {
-  const assoc = await apiRequest(
-    'GET',
-    `/crm/v4/objects/companies/${companyId}/associations/deals?limit=100`
-  );
-  const dealIds = (assoc.results || []).map(r => r.toObjectId).filter(Boolean);
+  const dealIds = await _allDealIdsForCompany(companyId);
   if (!dealIds.length) return [];
-  const res = await apiRequest('POST', '/crm/v3/objects/deals/batch/read', {
-    inputs:     dealIds.map(id => ({ id: String(id) })),
-    properties: ['dealname', 'dealstage', 'pipeline', 'hubspot_owner_id',
-                 'deal_category', 'hs_lastmodifieddate']
-  });
-  return (res.results || [])
+  const results = await _batchReadDeals(dealIds, [
+    'dealname', 'dealstage', 'pipeline', 'hubspot_owner_id',
+    'deal_category', 'hs_lastmodifieddate',
+    // property fields are needed by the dedup matcher in pdf-ingest.js
+    'property_name', 'property_street_address', 'property_city', 'property_state']);
+  return results
     .filter(d => d.properties?.pipeline === AP_PIPELINE_ID)
     .filter(d => !CLOSED_STAGES.has(d.properties?.dealstage))
     .sort((a, b) => (b.properties.hs_lastmodifieddate || '').localeCompare(
                     a.properties.hs_lastmodifieddate || ''));
+}
+
+// Return ALL Closed-Won deals on a company, with property fields. Closed-Won
+// deals are intentionally excluded from findOpenDealsForCompany; this is the
+// dedicated lookup the ingest uses for property-level dedup so it can detect
+// "this property is already won" and skip creating a duplicate deal.
+async function findClosedWonDealsForCompany(companyId) {
+  const closedWonStages = await getClosedWonStageIds();
+  if (!closedWonStages.size) return [];
+  const dealIds = await _allDealIdsForCompany(companyId);
+  if (!dealIds.length) return [];
+  const results = await _batchReadDeals(dealIds, [
+    'dealname', 'dealstage', 'pipeline', 'hubspot_owner_id', 'closedate',
+    'property_name', 'property_street_address', 'property_city', 'property_state']);
+  return results.filter(d => closedWonStages.has(d.properties?.dealstage));
+}
+
+// Return the most-recent change source for each given deal property. Used to
+// decide whether a value was last set by a human (sourceType === 'CRM_UI') —
+// in which case the ingest must NOT overwrite it.
+async function getDealPropertyHistory(dealId, fields) {
+  try {
+    const d = await apiRequest('GET',
+      `/crm/v3/objects/deals/${dealId}?propertiesWithHistory=${fields.join(',')}`);
+    const out = {};
+    for (const f of fields) {
+      const hist = (d.propertiesWithHistory || {})[f] || [];   // newest-first
+      out[f] = hist[0] ? { sourceType: hist[0].sourceType, value: hist[0].value } : null;
+    }
+    return out;
+  } catch { return {}; }
 }
 
 async function updateCompany(companyId, properties) {
@@ -539,6 +594,8 @@ module.exports = {
   apiRequest,
   findOpenDealForCompany,
   findOpenDealsForCompany,
+  findClosedWonDealsForCompany,
+  getDealPropertyHistory,
   createDeal,
   updateDeal,
   archiveDeal,

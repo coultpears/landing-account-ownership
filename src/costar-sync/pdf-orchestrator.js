@@ -57,8 +57,8 @@ function pickSpecialist(hqLocation) {
 }
 
 const {
-  apiRequest, findOpenDealsForCompany, findContactByEmail,
-  findClosedWonOwnerForCompany
+  apiRequest, findOpenDealsForCompany, findClosedWonDealsForCompany,
+  findContactByEmail, findClosedWonOwnerForCompany
 } = hsx;
 
 const {
@@ -138,7 +138,8 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency
         enriched: 0, created: 0
       },
       deals: { created: 0, merged: 0, dupes_merged: 0, merge_failures: 0,
-               location_overrides: 0, skipped_no_domain: 0, skipped_no_rep: 0 },
+               location_overrides: 0, skipped_no_domain: 0, skipped_no_rep: 0,
+               skipped_closed_won: 0, skipped_no_location: 0, soft_overrides_kept: 0 },
       contacts: { pdf_primary_created: 0, pdf_primary_associated: 0,
                   zi_found: 0, zi_created: 0, zi_associated: 0 },
       reps: { via_closed_won: 0, via_roe: 0, via_active_engagement: 0, via_territory: 0, via_lease_up: 0, no_rep_flagged: 0 },
@@ -153,6 +154,9 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency
     skipped_no_rep_owners: [],
     roe_active_mismatches: [],
     location_overrides: [],
+    closed_won_skips: [],
+    closed_won_siblings: [],
+    skipped_no_location: [],
     recorded_owner_notes: [],
     owners: [],
     warnings: []
@@ -313,12 +317,24 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency
       if (r.action === 'created')  report.summary.companies.created++;
     }
 
-    // 5) For each property, resolve / create / merge deal
-    const openDeals = companyId ? await findOpenDealsForCompany(companyId) : [];
+    // 5) For each property, resolve / create / merge deal.
+    // Pull open AND closed-won deals once per company — the dedup needs both:
+    // open deals to merge into, closed-won deals to detect an already-won
+    // property and skip creating a duplicate.
+    const openDeals      = companyId ? await findOpenDealsForCompany(companyId) : [];
+    const closedWonDeals = companyId ? await findClosedWonDealsForCompany(companyId) : [];
     const dealIds = [];
     const perProp = [];
     for (const p of ownerProps) {
       if ((p.contacts?.true_owners || []).length > 1) report.summary.multi_owner_jv++;
+      // Skip rows with no city AND no state — they produced "null, null-"
+      // dealnames and are not actionable. Flag for manual triage.
+      if (!String(p.property_city || '').trim() && !String(p.property_state || '').trim()) {
+        report.summary.deals.skipped_no_location = (report.summary.deals.skipped_no_location || 0) + 1;
+        report.skipped_no_location = report.skipped_no_location || [];
+        report.skipped_no_location.push({ ownerName, property: p.property_name || p.property_street_address || '(unnamed)' });
+        continue;
+      }
       try {
         // Per-property rep: evaluate lease-up status on THIS property.
         // Year built 2025+ OR vacancy 25%+ → Xander (per engine Tier 2,
@@ -346,11 +362,35 @@ async function runPdfIngest(ndjsonPath, { dryRun = true, onProgress, concurrency
         const dealResult = await createOrMergeDeal({
           row: p, ownerName, ownerEntity: entity,
           companyId, dealOwnerId: perPropOwnerId,
-          openDeals, dryRun
+          openDeals, closedWonDeals, dryRun
         });
         if (dealResult.action === 'created')    report.summary.deals.created++;
         else if (dealResult.action === 'merged') report.summary.deals.merged++;
         else if (dealResult.action === 'would_create') report.summary.deals.created++;
+        else if (dealResult.action === 'skipped_closed_won') {
+          // Property already has a Closed-Won deal — no duplicate created.
+          report.summary.deals.skipped_closed_won = (report.summary.deals.skipped_closed_won || 0) + 1;
+          report.closed_won_skips = report.closed_won_skips || [];
+          report.closed_won_skips.push({
+            ownerName, property: p.property_name || p.property_street_address || '(unnamed)',
+            closedWonDealId: dealResult.closedWonDealId,
+            closedWonDealname: dealResult.closedWonDealname,
+            closedWonOwnerId: dealResult.closedWonOwnerId
+          });
+        }
+        // Soft-override bookkeeping — rep-entered values CoStar wanted to change.
+        if (dealResult.softOverridesKept?.length) {
+          report.summary.deals.soft_overrides_kept =
+            (report.summary.deals.soft_overrides_kept || 0) + dealResult.softOverridesKept.length;
+        }
+        if (dealResult.closedWonSibling) {
+          report.closed_won_siblings = report.closed_won_siblings || [];
+          report.closed_won_siblings.push({
+            ownerName, openDealId: dealResult.dealId,
+            closedWonDealId: dealResult.closedWonSibling.id,
+            closedWonDealname: dealResult.closedWonSibling.dealname
+          });
+        }
         if (dealResult.mergedDupes?.length) report.summary.deals.dupes_merged += dealResult.mergedDupes.length;
         if (dealResult.mergeFailures?.length) {
           report.summary.deals.merge_failures += dealResult.mergeFailures.length;

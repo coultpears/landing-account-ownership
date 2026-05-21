@@ -40,6 +40,7 @@ const {
   apiRequest,
   findOpenDealForCompany,
   findOpenDealsForCompany,
+  findClosedWonDealsForCompany,
   createDeal,
   updateDeal,
   archiveDeal,
@@ -383,6 +384,25 @@ async function createOrMergeLeaseUpDeal(companyId, row, conflictNote, companyBas
   // and archive the newer dupes. Rename the winner to the new format.
   const openDeals = await findOpenDealsForCompany(companyId);
   const matches   = openDeals.filter(d => dealMatchesRow(d.properties?.dealname, row));
+
+  // Closed-Won guard — if the property already has a Closed-Won deal and no
+  // open deal to update, do NOT create a duplicate. (Mirrors pdf-ingest.js.)
+  if (!matches.length) {
+    const closedWon = await findClosedWonDealsForCompany(companyId);
+    const cwMatch = closedWon.find(d =>
+      dealMatchesRow(d.properties?.dealname, row) ||
+      dealMatchesRow(d.properties?.property_name, row));
+    if (cwMatch) {
+      return {
+        dealId: null,
+        action: 'skipped_closed_won',
+        name: dealName,
+        closedWonDealId: cwMatch.id,
+        closedWonDealname: cwMatch.properties?.dealname || null
+      };
+    }
+  }
+
   if (matches.length) {
     // Patched 2026-04-21 to match pdf-ingest.js policy:
     //   - Never archive a deal with active engagement (60d window)
@@ -411,7 +431,8 @@ async function createOrMergeLeaseUpDeal(companyId, row, conflictNote, companyBas
     }
 
     const updates = { ...fieldUpdates };
-    if ((winner.properties?.dealname || '') !== dealName) updates.dealname = dealName;
+    // Dealname is NOT rewritten on an existing deal — reps maintain their own
+    // naming; forcing the canonical format clobbered it (audit 2026-05-21).
     // Owner and category are NEVER changed on merge — preserves rep ownership
     if (Object.keys(updates).length) await updateDeal(winner.id, updates);
     if (conflictNote) await createNoteOnDeal(winner.id, conflictNote);
@@ -603,6 +624,16 @@ async function runLeaseUpIngest(filePath, { dryRun = false, onProgress } = {}) {
           }
           if (dealResult.action === 'created') summary.dealsCreated++;
           if (dealResult.action === 'merged')  summary.dealsMerged++;
+          if (dealResult.action === 'skipped_closed_won') {
+            summary.skippedClosedWon = (summary.skippedClosedWon || 0) + 1;
+            summary.closedWonSkips = summary.closedWonSkips || [];
+            summary.closedWonSkips.push({
+              owner: ownerName,
+              property: row['Property Name'] || row['Property Address'],
+              closedWonDealId: dealResult.closedWonDealId,
+              closedWonDealname: dealResult.closedWonDealname
+            });
+          }
           if (dealResult.archivedDupes?.length) {
             summary.dupesArchived = (summary.dupesArchived || 0) + dealResult.archivedDupes.length;
           }

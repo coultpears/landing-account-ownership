@@ -135,12 +135,73 @@ function dealMatchesRow(existingDealName, prop, ownerName) {
   // names lacked the owner (e.g. "Tampa - Richland Communities / The Gray
   // Noho" attached to the wrong company shell). The property-name token is
   // the durable signal; scope is what prevents cross-property collisions.
-  const existing = normPropToken(existingDealName);
+  // Strip generic complex-type words ("Apartments", "Residences"). CoStar and
+  // legacy dealnames disagree on whether to include them ("The Gray Noho" vs
+  // "The Gray Noho Apartments"; "Delano at Cypress Creek" vs "Delano
+  // Apartments at Cypress Creek") — without this, valid dupes were missed.
+  const stripGeneric = s => String(s || '')
+    .replace(/\b(apartments?|residences?)\b/g, ' ').replace(/\s+/g, ' ').trim();
+  const existing = stripGeneric(normPropToken(existingDealName));
   if (!existing) return false;
-  const propToken = normPropToken(prop.property_name || prop.property_street_address);
+  const propToken = stripGeneric(normPropToken(prop.property_name || prop.property_street_address));
   if (!propToken || propToken.length < 5) return false;
   if (!existing.includes(propToken)) return false;
   return true;
+}
+
+// Normalize a street address for equality comparison (abbreviations, case,
+// punctuation). Used by the cross-company corroboration guard.
+const _STREET_ABBR = [
+  [/\bstreet\b/g,'st'],[/\bavenue\b/g,'ave'],[/\bboulevard\b/g,'blvd'],
+  [/\bparkway\b/g,'pkwy'],[/\bpky\b/g,'pkwy'],[/\bdrive\b/g,'dr'],[/\broad\b/g,'rd'],
+  [/\blane\b/g,'ln'],[/\bcircle\b/g,'cir'],[/\bplace\b/g,'pl'],[/\bcourt\b/g,'ct'],
+  [/\bnorth\b/g,'n'],[/\bsouth\b/g,'s'],[/\beast\b/g,'e'],[/\bwest\b/g,'w']
+];
+function normStreetAddr(s) {
+  let v = String(s || '').toLowerCase().replace(/[.,'"()#]/g, ' ').replace(/\s+/g, ' ').trim();
+  for (const [re, rep] of _STREET_ABBR) v = v.replace(re, rep);
+  return v.replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Corroboration guard for CROSS-COMPANY dedup candidates.
+ *
+ * A shared property-name token alone is NOT enough across company boundaries:
+ * different buildings reuse names ("The Hamilton" exists in Miami AND in
+ * Kissimmee, owned by different companies). This caused real data corruption
+ * (deal 60254151066 — a rep's Miami deal overwritten with Kissimmee data).
+ *
+ * Before accepting a cross-company candidate as the SAME building, require at
+ * least one corroborating signal: same city, same street address, or the
+ * owner name fully present in the candidate dealname.
+ */
+function corroboratesCrossCompany(prop, candProps, ownerName) {
+  const rowCity  = (prop.property_city || '').toLowerCase().trim();
+  const candCity = (candProps.property_city || '').toLowerCase().trim();
+  if (rowCity && candCity && rowCity === candCity) return true;
+  const rowStreet  = normStreetAddr(prop.property_street_address);
+  const candStreet = normStreetAddr(candProps.property_street_address);
+  if (rowStreet && candStreet && rowStreet.length >= 6 && rowStreet === candStreet) return true;
+  if (ownerName && candProps.dealname &&
+      allQueryTokensInCandidate(ownerName, candProps.dealname)) return true;
+  return false;
+}
+
+/**
+ * Does an existing deal (open or closed) describe the SAME building as `prop`?
+ * Used for closed-won detection. `sameCompany` relaxes the check — when both
+ * deals sit on the resolved company record, owner identity is already
+ * guaranteed so a property-name OR street match is sufficient.
+ */
+function dealIsSameProperty(candProps, prop, ownerName, { sameCompany }) {
+  const nameHit = dealMatchesRow(candProps.dealname, prop, ownerName) ||
+                  dealMatchesRow(candProps.property_name, prop, ownerName);
+  const rowStreet  = normStreetAddr(prop.property_street_address);
+  const candStreet = normStreetAddr(candProps.property_street_address);
+  const streetHit  = rowStreet && candStreet && rowStreet.length >= 6 && rowStreet === candStreet;
+  if (!nameHit && !streetHit) return false;
+  if (sameCompany) return true;
+  return corroboratesCrossCompany(prop, candProps, ownerName);
 }
 
 // Tokens we don't want to use as the distinctive search term — too common
@@ -523,9 +584,13 @@ function decideUpdate(existing, proposed, policyMap) {
 // ---------------------------------------------------------------------------
 
 function buildDealName(prop, ownerName) {
-  const market = `${prop.property_city}, ${prop.property_state}`;
-  const propName = prop.property_name || prop.property_street_address;
-  return `${market}-${propName}/${ownerName || ''}`;
+  // Guard missing city/state — joining raw produced literal "null, null-..."
+  // dealnames (audit 2026-05-21). Rows with neither are skipped upstream by
+  // the orchestrator; this is the belt-and-suspenders fallback.
+  const market   = [prop.property_city, prop.property_state].filter(Boolean).join(', ');
+  const propName = prop.property_name || prop.property_street_address || 'Unknown Property';
+  const left     = market ? `${market}-${propName}` : propName;
+  return `${left}/${ownerName || ''}`;
 }
 
 function buildDealFields(prop, ownerEntity) {
@@ -954,21 +1019,31 @@ async function createOrUpdateCompany(resolved, proposal, ownerAssignedId) {
   return { id: created.id, action: 'created' };
 }
 
-async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealOwnerId, openDeals, dryRun }) {
+async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealOwnerId, openDeals, closedWonDeals = [], dryRun }) {
   const dealName = buildDealName(row, ownerName);
   const fields   = buildDealFields(row, ownerEntity);
   fields.dealname = dealName;
 
-  // Primary dedup: deals already associated to this company
+  // Closed-Won stage IDs (cached after first call) — used to detect a property
+  // that is already won so we skip creating a duplicate deal for it.
+  const cwStages = await hsx.getClosedWonStageIds();
+  const isClosedWon = s => cwStages.has(s);
+
+  // Primary dedup: open deals already associated to this company
   const companyMatches = openDeals.filter(d => dealMatchesRow(d.properties?.dealname, row, ownerName));
+
+  // Closed-Won match on the resolved company. Same company => owner identity
+  // is guaranteed, so a property-name or street match is sufficient.
+  const closedWonMatches = (closedWonDeals || []).filter(d =>
+    dealIsSameProperty(d.properties || {}, row, ownerName, { sameCompany: true }));
 
   // Cross-company dedup props (re-used by both passes below)
   const CROSS_PROPS = ['dealname','dealstage','pipeline','hubspot_owner_id',
-                       'hs_lastmodifieddate','notes_last_contacted',
+                       'hs_lastmodifieddate','notes_last_contacted','closedate',
                        'property_street_address','property_name','property_city',
                        'property_state','company_name'];
 
-  // Secondary dedup: ALL open AP deals at this property's street address.
+  // Secondary dedup: ALL AP deals at this property's street address.
   // Catches: (a) deals with no company association, (b) deals on a different
   // (duplicate) company record, (c) deals with inconsistent naming that hide
   // the owner token. Street address is globally unique per building.
@@ -984,32 +1059,29 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
         properties: CROSS_PROPS,
         limit: 50
       });
-      addressMatches = (r.results || []).filter(d => {
-        if (CLOSED_STAGES.has(d.properties?.dealstage)) return false;
+      for (const d of r.results || []) {
+        const dp = d.properties || {};
         // Same street can host multiple buildings (the VIV / Ascent St. Petersburg
         // collision on "1st Ave N", 2026-04-24). Without a building number,
-        // street EQ alone is too loose. Require property-name agreement before
-        // accepting an address candidate as a true dupe:
-        //   • exact (case-insensitive) property_name match, OR
-        //   • dealMatchesRow on the candidate's dealname, OR
-        //   • dealMatchesRow on the candidate's property_name field
+        // street EQ alone is too loose. Require property-name agreement.
         const rowName  = (row.property_name || '').toLowerCase().trim();
-        const candName = (d.properties?.property_name || '').toLowerCase().trim();
-        if (rowName && candName && rowName === candName) return true;
-        if (dealMatchesRow(d.properties?.dealname, row, ownerName)) return true;
-        if (dealMatchesRow(d.properties?.property_name, row, ownerName)) return true;
-        return false;
-      });
+        const candName = (dp.property_name || '').toLowerCase().trim();
+        const nameOk = (rowName && candName && rowName === candName) ||
+                       dealMatchesRow(dp.dealname, row, ownerName) ||
+                       dealMatchesRow(dp.property_name, row, ownerName);
+        if (!nameOk) continue;
+        if (isClosedWon(dp.dealstage)) closedWonMatches.push(d);
+        else if (!CLOSED_STAGES.has(dp.dealstage)) addressMatches.push(d);
+      }
     } catch {}
   }
 
   // Tertiary dedup: cross-company match by property_name token + state.
   // Catches legacy deals where street address was never populated (the
-  // 2024 Gray Noho case — same property attached to a wrong shell company,
-  // no street, address-search blind to it). Filtered through dealMatchesRow
-  // so a token like "Park" or "Plaza" can't accidentally merge unrelated
-  // properties — propToken from the canonical name must appear in the
-  // candidate dealname.
+  // 2024 Gray Noho case — same property attached to a wrong shell company).
+  // A property-name token match alone is NOT enough across companies — it
+  // collapsed two different "The Hamilton" buildings (deal 60254151066). So a
+  // candidate must ALSO clear corroboratesCrossCompany (city/street/owner).
   let propertyNameMatches = [];
   const propName = (row.property_name || '').trim();
   const stateCode = (row.property_state || '').trim().toUpperCase();
@@ -1027,31 +1099,51 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
           limit: 50
         });
         for (const d of r.results || []) {
-          if (CLOSED_STAGES.has(d.properties?.dealstage)) continue;
-          // Re-apply dealMatchesRow: propToken from full canonical name must
-          // appear in the candidate's dealname. Token search alone is too
-          // permissive (e.g. token "Pearl" matches "Pearl Heights" and
-          // "The Pearl" — only the latter is the same property as ours).
-          if (!dealMatchesRow(d.properties?.dealname, row, ownerName)) {
-            // Also accept if the candidate's property_name itself matches
-            // — guards against deals whose dealname uses an alias but
-            // whose property_name field is canonical.
-            if (!dealMatchesRow(d.properties?.property_name, row, ownerName)) continue;
-          }
-          propertyNameMatches.push(d);
+          const dp = d.properties || {};
+          // propToken from the full canonical name must appear in the
+          // candidate's dealname OR property_name field.
+          if (!dealMatchesRow(dp.dealname, row, ownerName) &&
+              !dealMatchesRow(dp.property_name, row, ownerName)) continue;
+          // ...AND a corroborating signal — guards against different buildings
+          // that reuse a property name across cities (the Hamilton bug).
+          if (!corroboratesCrossCompany(row, dp, ownerName)) continue;
+          if (isClosedWon(dp.dealstage)) closedWonMatches.push(d);
+          else if (!CLOSED_STAGES.has(dp.dealstage)) propertyNameMatches.push(d);
         }
         if (propertyNameMatches.length) break; // first hit token is enough
       } catch {}
     }
   }
 
-  // Union by deal ID. companyMatches takes precedence (richest data),
-  // then addressMatches, then propertyNameMatches.
+  // Union OPEN matches by deal ID. companyMatches takes precedence (richest
+  // data), then addressMatches, then propertyNameMatches.
   const byId = new Map();
   for (const d of companyMatches) byId.set(String(d.id), d);
   for (const d of addressMatches) if (!byId.has(String(d.id))) byId.set(String(d.id), d);
   for (const d of propertyNameMatches) if (!byId.has(String(d.id))) byId.set(String(d.id), d);
   const matches = Array.from(byId.values());
+
+  // Dedupe closed-won matches by id.
+  const cwById = new Map();
+  for (const d of closedWonMatches) cwById.set(String(d.id), d);
+  const closedWon = Array.from(cwById.values());
+
+  // CLOSED-WON GUARD: the property already has a Closed-Won deal and there is
+  // no open deal to update. Do NOT create a duplicate — flag it for the rep.
+  // (If an open deal also exists, fall through to the merge path below and
+  // update that; the closed-won sibling is surfaced on the result.)
+  if (!matches.length && closedWon.length) {
+    const cw = closedWon[0];
+    return {
+      dealId: null,
+      action: 'skipped_closed_won',
+      closedWonDealId: cw.id,
+      closedWonDealname: cw.properties?.dealname || null,
+      closedWonOwnerId: cw.properties?.hubspot_owner_id || null,
+      closedWonCloseDate: cw.properties?.closedate || null
+    };
+  }
+
   if (matches.length) {
     // NEW POLICY (2026-04-21): never archive a deal with active engagement.
     // Separate matches into active vs stale. "Active" = last engagement
@@ -1112,8 +1204,30 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
     delete updates.hubspot_owner_id;
     delete updates.pipeline;
     delete updates.dealstage;
-    // Dealname: update to canonical format
-    if ((winnerFull.properties?.dealname || '') !== dealName) updates.dealname = dealName;
+    // Never rewrite the dealname of an EXISTING deal. Reps maintain their own
+    // naming ("NYC - 505 State Street - 10"); forcing the canonical CoStar
+    // format clobbered it on 509 deals (audit 2026-05-21). New deals still get
+    // the canonical name via the create path below.
+    delete updates.dealname;
+
+    // SOFT location-override. CoStar is source-of-truth for stale imported
+    // data, but it must never overwrite a value a rep entered by hand. Check
+    // each location/identity field's change history — if the current value was
+    // last set via CRM_UI (a human), drop it from the patch and note it
+    // instead. This is the safety net that neutralizes any remaining bad
+    // dedup match (deal 60254151066 — Miami overwritten with Kissimmee).
+    const SOFT_KEYS = ['property_city','property_state','property_street_address','property_zip','company_name'];
+    const softKept = {};
+    const softCandidates = SOFT_KEYS.filter(k => mismatch[k]);
+    if (softCandidates.length && !dryRun) {
+      const hist = await hsx.getDealPropertyHistory(winner.id, softCandidates);
+      for (const k of softCandidates) {
+        if (hist[k] && hist[k].sourceType === 'CRM_UI') {
+          delete updates[k];          // respect the rep's manually-entered value
+          softKept[k] = mismatch[k];
+        }
+      }
+    }
 
     if (!dryRun && Object.keys(updates).length) {
       await updateDeal(winner.id, updates);
@@ -1159,12 +1273,20 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
       }
     }
 
-    // Location-override note
-    const locKeys = ['property_city','property_state','property_street_address','property_zip'];
-    const locOverrides = Object.fromEntries(locKeys.filter(k => mismatch[k]).map(k => [k, mismatch[k]]));
-    if (Object.keys(locOverrides).length && !dryRun) {
-      const noteBody = `<p><strong>Property location updated per CoStar ingest ${new Date().toISOString().slice(0,10)}</strong></p>` +
-        `<ul>${Object.entries(locOverrides).map(([k,v]) => `<li>${k}: "${v.current}" → "${v.proposed}"</li>`).join('')}</ul>`;
+    // Reconciliation note — lists fields updated per CoStar AND fields where
+    // CoStar disagreed but we kept the rep's manually-entered value (soft).
+    const NOTE_KEYS = ['property_city','property_state','property_street_address','property_zip','company_name'];
+    const noteRows = [];
+    for (const k of NOTE_KEYS) {
+      if (softKept[k]) {
+        noteRows.push(`<li><strong>${k}</strong>: CoStar says "${softKept[k].proposed}" — kept rep-entered value "${softKept[k].current}"</li>`);
+      } else if (mismatch[k]) {
+        noteRows.push(`<li><strong>${k}</strong>: "${mismatch[k].current}" → "${mismatch[k].proposed}" (updated per CoStar)</li>`);
+      }
+    }
+    if (noteRows.length && !dryRun) {
+      const noteBody = `<p><strong>CoStar ingest ${new Date().toISOString().slice(0,10)} — location/identity reconciliation</strong></p>` +
+        `<ul>${noteRows.join('')}</ul>`;
       try { await createNoteOnDeal(winner.id, noteBody); } catch {}
     }
 
@@ -1181,6 +1303,12 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
         owner: d.properties?.hubspot_owner_id,
         lastContact: d.properties?.notes_last_contacted
       })),
+      // Rep-entered values CoStar wanted to change but we preserved.
+      softOverridesKept: Object.keys(softKept),
+      // A Closed-Won deal also exists for this property (rare — open + won).
+      closedWonSibling: closedWon[0]
+        ? { id: closedWon[0].id, dealname: closedWon[0].properties?.dealname }
+        : null,
       mismatch
     };
   }
@@ -1266,6 +1394,8 @@ module.exports = {
   sharesOwnerToken, allQueryTokensInCandidate, candidateHasExtraTokens,
   HOA_TRUST_PATTERNS, CORPORATE_SUFFIX_RE, isIndividualName, shouldSkipOwner,
   getPrimaryOwnerEntity,
+  // Dedup matchers (exported for the audit/verification harness)
+  normStreetAddr, corroboratesCrossCompany, dealIsSameProperty,
 
   // Domain derivation
   cleanDomain, deriveDomainFromContactEmails, clearbitLookup, loadCuratedDomains,

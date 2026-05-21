@@ -1797,7 +1797,8 @@ async function runPdfIngestFromFile(filePath, channel, threadTs, client, isDryRu
     `• Properties processed: *${s.processed}* of ${s.total_properties}` +
       (s.skipped_no_owner ? `  _(skipped ${s.skipped_no_owner} no-owner)_` : '') +
       (s.skipped_hoa_trust_individual ? `  _(filtered ${s.skipped_hoa_trust_individual} HOA/trust/individual)_` : ''),
-    `• Deals — created: *${s.deals.created}* | merged: *${s.deals.merged}* | dupes archived: ${s.deals.dupes_archived} | location-override notes: ${s.deals.location_overrides}`,
+    `• Deals — created: *${s.deals.created}* | merged: *${s.deals.merged}* | dupes merged: ${s.deals.dupes_merged} | location-override notes: ${s.deals.location_overrides}`,
+    `• Dedup guards — skipped (already Closed-Won): *${s.deals.skipped_closed_won || 0}* | rep edits preserved (soft-override): ${s.deals.soft_overrides_kept || 0} | skipped (no city/state): ${s.deals.skipped_no_location || 0}`,
     `• Companies — CoStar domain: ${s.companies.tier1_costar_domain} | email-domain: ${s.companies.tier125_email_domain} | Clearbit: ${s.companies.tier15_clearbit} | name: ${s.companies.tier2_name} | created: ${s.companies.created} | enriched: ${s.companies.enriched}`,
     `• Contacts — PDF primary: ${s.contacts.pdf_primary_created} new, ${s.contacts.pdf_primary_associated} associated | ZI: ${s.contacts.zi_created} new, ${s.contacts.zi_associated} associated`,
     `• Rep assignments — ROE: ${s.reps.via_roe} | active-engagement override: *${s.reps.via_active_engagement}* | territory: ${s.reps.via_territory} | *flagged no rep: ${s.reps.no_rep_flagged}*`
@@ -1858,6 +1859,19 @@ async function runPdfIngestFromFile(filePath, channel, threadTs, client, isDryRu
       }
     }
     if (report.active_dupes_flagged.length > 10) parts.push(`\n_… and ${report.active_dupes_flagged.length - 10} more_`);
+    await client.chat.postMessage({ channel, thread_ts: threadTs, text: parts.join('\n').slice(0, 3800) });
+  }
+
+  // 5c. Closed-Won skips — properties the ingest did NOT create a deal for
+  // because a Closed-Won deal already exists. Reps need to see these.
+  if (report.closed_won_skips?.length) {
+    const portalId = '20754835';
+    const dealUrl = id => `https://app.hubspot.com/contacts/${portalId}/record/0-3/${id}`;
+    const parts = [`*Skipped — already Closed-Won* (${report.closed_won_skips.length}): no duplicate deal created.`];
+    for (const x of report.closed_won_skips.slice(0, 20)) {
+      parts.push(`• *${x.property}* (${x.ownerName}) — existing Closed-Won deal <${dealUrl(x.closedWonDealId)}|${x.closedWonDealname || x.closedWonDealId}>`);
+    }
+    if (report.closed_won_skips.length > 20) parts.push(`_… and ${report.closed_won_skips.length - 20} more_`);
     await client.chat.postMessage({ channel, thread_ts: threadTs, text: parts.join('\n').slice(0, 3800) });
   }
 
