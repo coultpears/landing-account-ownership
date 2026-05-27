@@ -61,7 +61,7 @@
     {
       "rep": "Wells Davis",
       "states": ["TX"],
-      "subMarkets": ["DFW", "Dallas", "Fort Worth", "Frisco", "Plano", "Arlington", "McKinney", "Irving", "Carrollton", "Lewisville", "Allen", "Richardson", "Denton", "Grand Prairie", "Garland", "Austin", "Round Rock", "Cedar Park"],
+      "subMarkets": ["DFW", "Dallas", "Fort Worth", "Frisco", "Plano", "Arlington", "McKinney", "Irving", "Carrollton", "Lewisville", "Allen", "Richardson", "Denton", "Grand Prairie", "Garland", "Austin", "Round Rock", "Cedar Park", "Corinth", "Flower Mound", "Coppell", "Euless", "Bedford", "Hurst", "Mansfield", "Cedar Hill", "Pflugerville", "Leander", "Georgetown"],
       "focus": "DFW & Austin",
       "region": "Texas North",
       "assignedAt": "2026-01-01T00:00:00Z"
@@ -69,11 +69,11 @@
     {
       "rep": "Ghislain Cossio",
       "states": ["TX"],
-      "subMarkets": ["Houston", "The Woodlands", "Woodlands", "Sugar Land", "Katy", "Humble", "Pasadena", "Pearland", "Conroe", "Spring", "League City", "Baytown", "San Antonio", "New Braunfels", "San Marcos"],
+      "subMarkets": ["Houston", "The Woodlands", "Woodlands", "Sugar Land", "Katy", "Humble", "Pasadena", "Pearland", "Conroe", "Spring", "League City", "Baytown", "San Antonio", "New Braunfels", "San Marcos", "Cypress", "Tomball", "Fulshear", "Missouri City", "Stafford", "Friendswood", "Webster", "La Porte", "Galveston", "Texas City", "Rosenberg", "Richmond", "Magnolia"],
       "focus": "Houston & San Antonio",
       "region": "Houston / SA",
-      "assignedAt": "2026-04-23T00:00:00Z",
-      "notes": "Took over Houston/SA after John LaVanway left the company 2026-04"
+      "assignedAt": "2026-05-27T00:00:00Z",
+      "notes": "Took over Houston/SA after John LaVanway left 2026-04. Houston-metro suburbs (Cypress, Tomball, Fulshear, etc.) added 2026-05-27 after Tier 5 territory pass surfaced gaps."
     },
     {
       "rep": "Scout Bishop",
@@ -89,23 +89,17 @@
       "subMarkets": [],
       "focus": "FL (except Fort Lauderdale & Miami)",
       "region": "Southeast + Rockies",
-      "assignedAt": "2026-03-18T00:00:00Z"
-    },
-    {
-      "rep": "Ashtyn Garner",
-      "states": ["FL"],
-      "subMarkets": ["Fort Lauderdale", "Broward", "Pompano Beach", "Deerfield Beach", "Coral Springs", "Sunrise", "Plantation", "Davie", "Weston", "Hollywood", "Margate", "Coconut Creek", "Tamarac", "Lauderhill", "Lauderdale Lakes"],
-      "focus": "Fort Lauderdale",
-      "region": "Fort Lauderdale",
-      "assignedAt": "2026-03-18T00:00:00Z"
+      "assignedAt": "2026-03-18T00:00:00Z",
+      "notes": "Catchall for FL — anything not in Renato's Miami/Fort Lauderdale subMarkets routes here per playbook 2026-05-27"
     },
     {
       "rep": "Renato Lagomarsino",
       "states": ["FL"],
-      "subMarkets": ["Miami", "Dade", "Coral Gables", "Brickell", "Hialeah", "Homestead", "Aventura", "North Miami", "South Miami", "Miami Beach", "Doral", "Kendall", "Cutler Bay", "Miami Gardens", "Miami Lakes", "Sunny Isles"],
-      "focus": "Miami",
-      "region": "Miami",
-      "assignedAt": "2026-03-18T00:00:00Z"
+      "subMarkets": ["Miami", "Dade", "Coral Gables", "Brickell", "Hialeah", "Homestead", "Aventura", "North Miami", "South Miami", "Miami Beach", "Doral", "Kendall", "Cutler Bay", "Miami Gardens", "Miami Lakes", "Sunny Isles", "Fort Lauderdale", "Broward", "Pompano Beach", "Deerfield Beach", "Coral Springs", "Sunrise", "Plantation", "Davie", "Weston", "Hollywood", "Margate", "Coconut Creek", "Tamarac", "Lauderhill", "Lauderdale Lakes"],
+      "focus": "Miami & Fort Lauderdale",
+      "region": "Miami/Fort Lauderdale",
+      "assignedAt": "2026-05-27T00:00:00Z",
+      "notes": "Per playbook 2026-05-27 — Renato now covers BOTH Miami and Fort Lauderdale regions (Ashtyn Garner departed; FL split is Renato=Miami/FtL vs Scout=rest)"
     },
     {
       "rep": "Richard Baugh",
