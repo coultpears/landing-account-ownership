@@ -1316,14 +1316,58 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
   // Create new
   if (dryRun) return { dealId: null, action: 'would_create' };
 
+  // Call expansion-enrichment-agent's tagger-service /classify endpoint
+  // (added 2026-05-26 — see BACKLOG.md). Single source of truth for
+  // category + pipeline + stage + owner. If the call fails or returns
+  // an error, fall back to the AP-Outside defaults; the tagger webhook
+  // will still run ~5 min later and re-classify, so CoStar imports never
+  // block on the classify service being unavailable.
+  let classifyResult = null;
+  try {
+    classifyResult = await callClassifierService({
+      partnerName: ownerName,
+      propertyName: row.property_name || null,
+      city: row.property_city || null,
+      state: row.property_state || null,
+      dealname: dealName,
+      currentOwnerId: String(dealOwnerId),
+    });
+  } catch (e) {
+    if (process.env.DEBUG_CLASSIFY) console.error('[costar-sync] /classify call failed, falling back to defaults:', e.message);
+  }
+
+  // Defaults — match pre-2026-05-26 behavior. Used when classifier service
+  // is unavailable OR returns an error.
+  let pipelineId  = AP_PIPELINE_ID;
+  let dealstageId = DEAL_STAGE_FOR_NEW;
+  let dealCategory = null;          // unset — rep-controlled
+  let existingPartner = null;
+  let ownerId = String(dealOwnerId);
+
+  if (classifyResult && classifyResult.category) {
+    dealCategory     = classifyResult.category;
+    existingPartner  = classifyResult.existingPartner;
+    pipelineId       = classifyResult.pipeline || AP_PIPELINE_ID;
+    dealstageId      = classifyResult.stage    || DEAL_STAGE_FOR_NEW;
+    // Owner: only override if resolver returned a HS owner id AND it differs
+    // from the territory-resolved owner. Otherwise keep dealOwnerId.
+    const resolverOwner = classifyResult.owner?.ownerHubspotId;
+    if (resolverOwner && classifyResult.owner.changeFromCurrent) {
+      ownerId = String(resolverOwner);
+    } else if (classifyResult.owner?.via === 'unassign-unqualified' || classifyResult.owner?.via === 'unassign-unqualified-nds-email-unresolved') {
+      ownerId = '';                 // unassign per qualified-rep gate
+    }
+  }
+
   const payload = {
     properties: {
       ...fields,
       dealname: dealName,
-      pipeline: AP_PIPELINE_ID,
-      dealstage: DEAL_STAGE_FOR_NEW,
-      hubspot_owner_id: String(dealOwnerId)
-      // deal_category intentionally not set — rep-controlled
+      pipeline: pipelineId,
+      dealstage: dealstageId,
+      ...(ownerId ? { hubspot_owner_id: ownerId } : {}),
+      ...(dealCategory ? { deal_category: dealCategory } : {}),
+      ...(existingPartner ? { existing_partner: existingPartner } : {}),
     },
     associations: [{
       to: { id: String(companyId) },
@@ -1336,7 +1380,35 @@ async function createOrMergeDeal({ row, ownerName, ownerEntity, companyId, dealO
     if (v == null || v === '') delete payload.properties[k];
   }
   const created = await apiRequest('POST', '/crm/v3/objects/deals', payload);
-  return { dealId: created.id, action: 'created' };
+  return {
+    dealId: created.id,
+    action: 'created',
+    classify: classifyResult ? {
+      category: classifyResult.category,
+      pipeline: classifyResult.pipeline,
+      stage: classifyResult.stage,
+      via: classifyResult.via,
+      ownerVia: classifyResult.owner?.via || null,
+    } : { skipped: 'service-unavailable' },
+  };
+}
+
+// Call the expansion-enrichment-agent tagger-service /classify endpoint.
+// Configured via env: TAGGER_SERVICE_URL + TAGGER_SHARED_SECRET.
+// Returns the parsed response body on success; throws on any failure.
+async function callClassifierService(input) {
+  const url = process.env.TAGGER_SERVICE_URL || 'https://tagger-service-1018923018237.us-central1.run.app';
+  const secret = process.env.TAGGER_SHARED_SECRET;
+  if (!secret) throw new Error('TAGGER_SHARED_SECRET not set');
+  const r = await fetch(url.replace(/\/$/, '') + '/classify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Tagger-Secret': secret },
+    body: JSON.stringify(input),
+    // Don't block deal creation more than a few seconds if the service is slow.
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!r.ok) throw new Error('classify HTTP ' + r.status + ': ' + (await r.text()).slice(0, 200));
+  return r.json();
 }
 
 // ---------------------------------------------------------------------------

@@ -41,6 +41,13 @@
       "rep": "Jack Harvey",
       "assignedAt": "2026-01-01T00:00:00Z",
       "notes": "Existing partner"
+    },
+    {
+      "owner": "Roers Companies",
+      "aliases": ["Roers", "Core Living / Roers Companies", "Core Living"],
+      "rep": "Xander Williams",
+      "assignedAt": "2026-05-26T00:00:00Z",
+      "notes": "Per Matt 2026-05-26 — Roers routes to Xander regardless of territory"
     }
   ],
   "stateAssignments": [
@@ -60,19 +67,21 @@
       "assignedAt": "2026-01-01T00:00:00Z"
     },
     {
-      "rep": "John LaVanway",
+      "rep": "Ghislain Cossio",
       "states": ["TX"],
       "subMarkets": ["Houston", "The Woodlands", "Woodlands", "Sugar Land", "Katy", "Humble", "Pasadena", "Pearland", "Conroe", "Spring", "League City", "Baytown", "San Antonio", "New Braunfels", "San Marcos"],
       "focus": "Houston & San Antonio",
-      "region": "Texas South",
-      "assignedAt": "2026-01-01T00:00:00Z"
+      "region": "Houston / SA",
+      "assignedAt": "2026-04-23T00:00:00Z",
+      "notes": "Took over Houston/SA after John LaVanway left the company 2026-04"
     },
     {
       "rep": "Scout Bishop",
-      "states": ["GA", "VA", "MD", "DC", "MT", "WY", "AK"],
+      "states": ["GA", "NC", "SC", "VA", "MD", "DC", "DE", "MT", "WY", "AK"],
       "subMarkets": [],
       "region": "Southeast + Rockies",
-      "assignedAt": "2026-03-18T00:00:00Z"
+      "assignedAt": "2026-05-21T00:00:00Z",
+      "notes": "NC, SC, DE absorbed from Sophia Nadler 2026-05-21 (departed Landing)"
     },
     {
       "rep": "Scout Bishop",
@@ -99,40 +108,28 @@
       "assignedAt": "2026-03-18T00:00:00Z"
     },
     {
-      "rep": "Sophia Nadler",
-      "states": ["NC", "SC", "WA", "OR", "ID"],
-      "subMarkets": [],
-      "region": "Mid-Atlantic + Pacific NW",
-      "assignedAt": "2026-03-01T00:00:00Z"
-    },
-    {
       "rep": "Richard Baugh",
-      "states": ["IL", "OH", "WI", "ND", "SD"],
+      "states": ["IL", "OH", "WI", "ND", "SD", "NY"],
       "subMarkets": [],
       "region": "Upper Midwest + Great Lakes",
-      "assignedAt": "2026-03-16T00:00:00Z",
-      "notes": "IN/MN/MI transferred to Cameron Copeland 2026-04-17"
+      "assignedAt": "2026-04-23T00:00:00Z",
+      "notes": "IN/MN/MI transferred to Cameron Copeland 2026-04-17; NY absorbed from Ghislain 2026-04-23"
     },
     {
       "rep": "Cameron Copeland",
-      "states": ["IN", "MN", "MI", "WV"],
+      "states": ["IN", "MN", "MI", "WV", "CT", "PA", "NJ", "MA", "RI", "NH", "VT", "ME"],
       "subMarkets": [],
-      "region": "Great Lakes + Appalachia",
-      "assignedAt": "2026-04-17T00:00:00Z"
+      "region": "Great Lakes + Northeast",
+      "assignedAt": "2026-05-21T00:00:00Z",
+      "notes": "CT/PA/NJ absorbed from Ghislain 2026-04-23; MA/RI/NH/VT/ME absorbed from Sophia Nadler 2026-05-21 (departed Landing)"
     },
     {
       "rep": "Raegan Harris",
-      "states": ["CA", "NV", "NM", "AZ", "HI"],
+      "states": ["CA", "OR", "WA", "ID", "NV", "NM", "AZ", "HI"],
       "subMarkets": [],
-      "region": "West Coast + Southwest",
-      "assignedAt": "2026-03-16T00:00:00Z"
-    },
-    {
-      "rep": "Ghislain Cossio",
-      "states": ["NY", "CT", "PA", "NJ", "MA", "DE", "RI", "NH", "VT", "ME"],
-      "subMarkets": [],
-      "region": "Northeast Corridor + New England",
-      "assignedAt": "2026-03-16T00:00:00Z"
+      "region": "West Coast + Pacific NW + Southwest",
+      "assignedAt": "2026-05-21T00:00:00Z",
+      "notes": "OR/WA/ID absorbed from Sophia Nadler 2026-05-21 (departed Landing)"
     },
     {
       "rep": "Nolan Moran",
